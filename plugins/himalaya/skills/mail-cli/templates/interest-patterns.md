@@ -1,0 +1,23 @@
+---
+enabled: true
+last_updated: YYYY-MM-DD
+---
+
+# Mail Interest Patterns
+
+Store reusable triage patterns only. Do not store full email bodies, credentials, private addresses, inferred sensitive attributes, or exact personal, financial, health, political, religious, sexuality-related, or legal details.
+
+## Likely interesting or useful
+- Pattern: ...
+  Evidence: user expanded/summarized/replied on YYYY-MM-DD.
+  Apply when: ...
+
+## Usually low-value
+- Pattern: ...
+  Evidence: user archived/skipped without opening on YYYY-MM-DD.
+  Apply when: ...
+
+## Uncertain / needs confirmation
+- Pattern: ...
+  Evidence: ...
+  Ask when: ...

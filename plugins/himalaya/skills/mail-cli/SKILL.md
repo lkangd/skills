@@ -1,6 +1,6 @@
 ---
 name: mail-cli
-description: Use the himalaya CLI for email tasks whenever the user asks to check inboxes, unread mail, search mail, summarize emails, read threads, compose new emails, send an email, write an email, draft replies, reply, forward messages, download attachments, or organize email with archive/move/delete actions across IMAP or Maildir accounts. Prefer this skill even when the user says only “mail”, “email”, “inbox”, “unread”, “reply”, “send an email”, “write an email”, or “search my messages”. Always confirm recipients, subject, and body before sending, and confirm exact account/folder/IDs before destructive actions.
+description: This skill is for email tasks using the himalaya CLI: checking inbox/unread mail, searching messages, summarizing or reading threads, handling attachments, composing/replying/forwarding, archiving/moving/deleting/flagging, and reviewing a day's mail for items interesting or useful to the user. Use it for mail, email, inbox, unread messages, replies, sending email, searching messages, requests to review today's mail, find useful emails, decide what to read in an inbox, daily mail reviews, useful-content triage, and personalized interest-based email summaries.
 ---
 
 # Mail CLI Skill (himalaya)
@@ -13,15 +13,17 @@ Use this skill to:
 
 1. discover the real accounts and folders on this machine,
 2. read and search mail without accidentally changing state,
-3. recap any risky action before running it,
-4. send or draft mail only through explicit confirmation.
+3. learn the user's email-interest patterns from their explicit actions,
+4. use those patterns to surface useful or interesting mail during broad daily reviews,
+5. recap any risky action before running it,
+6. send or draft mail only through explicit confirmation.
 
 ## Non-negotiable rules
 
 Keep these rules in working memory even if you never open the reference files.
 
 1. **Verify runtime setup before acting.** Account names, default account, folder names, and enabled features differ across machines.
-2. **Use JSON whenever agents needs to parse output.**
+2. **Use JSON whenever the agent needs to parse output.**
 3. **Pass `-a <account>` explicitly.** Never rely on the default account.
 4. **Pass `-f <folder>` explicitly when not using `INBOX`.** Resolve actual folder names first.
 5. **Use `message read --preview` for analysis and summaries.** Do not silently mark mail as seen.
@@ -30,9 +32,11 @@ Keep these rules in working memory even if you never open the reference files.
 8. **Confirm before send.** Show the full outgoing draft and wait for an unambiguous send confirmation.
 9. **Confirm before destructive actions.** For delete, move, expunge, purge, flag changes, or folder deletion, recap the exact `account + folder + IDs + action` and ask first.
 10. **Operate on one account at a time** unless the user explicitly asks for all mailboxes.
-11. **Chunk large actions.** If acting on more than 50 messages, split into batches.
-12. **Do not edit config or expose secrets.** Never modify `config.toml`; never put passwords or tokens on the command line.
-13. **Do not invent mailbox facts.** If no match exists, say so explicitly instead of inventing results, drafts, or recipients.
+11. **Record interest signals when the user reveals preferences.** Save durable observations about which mail they open, ask to expand, summarize, explicitly dismiss, or repeatedly archive unread so future broad reviews can be personalized.
+12. **Keep interest records local and non-secret.** Store only patterns, categories, title/content traits, and knowledge domains; do not copy full email bodies, credentials, private addresses, or sensitive personal data into preference files.
+13. **Chunk large actions.** If acting on more than 50 messages, split into batches.
+14. **Do not edit config or expose secrets.** Never modify `config.toml`; never put passwords or tokens on the command line.
+15. **Do not invent mailbox facts.** If no match exists, say so explicitly instead of inventing results, drafts, or recipients.
 
 ## Session-start check
 
@@ -60,8 +64,20 @@ If `himalaya` is missing or broken, report it and consult `references/troublesho
 - List unread envelopes without changing state.
 - Read only relevant messages with `--preview`.
 - Summarize with IDs visible.
+- Update interest patterns if the user asks to expand, summarize, ignore, or archive specific kinds of messages.
 
 See `references/workflows.md` for the detailed flow and result format.
+
+### Personalized daily review
+
+Use this flow when the user asks to review a day's mail broadly and list what is interesting, useful, worth reading, or relevant to them.
+
+- Read `.claude/himalaya.local.md` from the current workspace root if it exists; if the workspace root is unclear, ask before creating a preference file.
+- List candidate envelopes without changing state, then preview prioritized, sampled, or operationally important candidates with `--preview`.
+- Return a ranked list with message IDs, why each item may matter, and which preference pattern matched.
+- Ask which items to expand or archive so the preference record can improve.
+
+See `references/personalized-triage.md` for the detailed workflow, signal rules, privacy guardrails, and preference-file template usage.
 
 ### Search mail
 
@@ -94,9 +110,20 @@ See `references/command-patterns.md` and `references/workflows.md` for the comma
 - Dry-run or list matching IDs first.
 - Recap the exact action, account, folder, target, and IDs.
 - Ask for confirmation.
+- If the user archives or deletes messages without opening their content, treat that as a weak low-interest signal; record shared traits only when the pattern is repeated or the user confirms the reason.
 
 Use `templates/destructive-action-confirmation.md` for the exact recap block.
 See `references/command-patterns.md` for the command forms.
+
+## Interest pattern memory
+
+When the user reveals durable email preferences, maintain `.claude/himalaya.local.md` at the current workspace root. Store only reusable patterns, categories, title/content traits, knowledge domains, the user action that revealed the signal, and the date.
+
+Before first creating the file, ask for explicit confirmation and explain what will be stored. If the workspace root is unclear, ask where to store the file. After each update, mention the pattern recorded. Do not copy full email bodies, credentials, private addresses, sensitive personal data, or inferred sensitive personal attributes.
+
+Use interest patterns as ranking aids, not hard filters. Low-interest patterns should not hide time-sensitive, directly addressed, security-related, billing-related, or operationally important mail.
+
+See `references/personalized-triage.md` for signal rules and privacy guardrails. Use `templates/interest-patterns.md` when creating the preference file.
 
 ## Resource map
 
@@ -104,9 +131,11 @@ Open additional files only when needed:
 
 - `references/command-patterns.md` — concrete command forms and query examples
 - `references/workflows.md` — task-specific workflows and result presentation guidance
+- `references/personalized-triage.md` — daily useful-mail review, interest signals, and privacy guardrails
 - `references/troubleshooting.md` — setup issues, OAuth failures, timeouts, noisy warnings, and hangs
 - `templates/send-confirmation.md` — exact outgoing email confirmation block
 - `templates/destructive-action-confirmation.md` — exact destructive-action recap block
+- `templates/interest-patterns.md` — starter structure for `.claude/himalaya.local.md`
 - `scripts/normalize_envelopes.py` — deterministic formatter for Himalaya envelope JSON when a stable compact table is useful
 
 ## What not to do
