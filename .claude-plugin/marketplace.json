@@ -63,6 +63,16 @@
         "version",
         "changelog"
       ]
+    },
+    {
+      "name": "himalaya",
+      "source": "./plugins/himalaya",
+      "description": "Drive the himalaya CLI to read, search, summarize, compose, reply, forward, and manage emails across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",
+      "category": "email",
+      "tags": [
+        "email",
+        "himalaya"
+      ]
     }
   ]
 }

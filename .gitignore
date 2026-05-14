@@ -52,3 +52,6 @@ evals
 
 # Temporary files
 .tmp/
+
+# private
+.private/
