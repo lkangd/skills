@@ -152,12 +152,12 @@ def _random_system_message() -> str:
     return random.choice([*REFERENCE_LINES, _random_symbol_message()])
 
 
-def _build_injection() -> dict:
+def _build_injection(hook_event_name: str = "SessionStart") -> dict:
     context = _load_skill_context()
     payload: dict[str, object] = {
         "systemMessage": _random_system_message(),
         "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
+            "hookEventName": hook_event_name,
             "additionalContext": context,
         },
     }
@@ -172,6 +172,7 @@ def main() -> None:
         print(json.dumps(_build_injection(), ensure_ascii=False))
         return
 
+    hook_event_name = event.get("hook_event_name") or "SessionStart"
     normalized = _norm(_extract_prompt(event))
     if _match_any(normalized, DISABLE_PATTERNS) or _match_any(
         normalized, MACHINE_PATTERNS
@@ -179,7 +180,7 @@ def main() -> None:
         print("{}")
         return
 
-    print(json.dumps(_build_injection(), ensure_ascii=False))
+    print(json.dumps(_build_injection(hook_event_name), ensure_ascii=False))
 
 
 if __name__ == "__main__":
