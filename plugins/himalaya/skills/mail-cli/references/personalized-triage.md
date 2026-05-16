@@ -11,7 +11,8 @@ Use this reference when the user asks to review a day's mail broadly and list wh
 5. Return a ranked list with message ID, sender, subject, why it may matter to the user, and the evidence pattern that matched.
 6. Include a low-value or skipped summary only when it helps explain why obvious-looking messages were not prioritized.
 7. Mention if the result depends on sparse or missing preference history, and ask which items the user wants to expand or archive so the pattern file can improve.
-8. After the user chooses messages to expand, summarize, ignore, or archive unread, update the interest pattern record when the signal is durable enough.
+8. When the user chooses messages, message groups, or themes to expand/open from a list, enter preference analysis immediately: identify reusable traits, decide whether the signal is durable and privacy-safe, and update the interest pattern record when appropriate.
+9. After the user chooses messages to summarize, ignore, or archive unread, update the interest pattern record when the signal is durable enough.
 
 ## Preference file
 
@@ -45,7 +46,7 @@ Preference note: <missing/sparse/updated preference context, if relevant>
 
 Record positive signals when the user:
 
-- asks to expand/open specific messages from a list,
+- asks to expand/open specific messages, message groups, or themes from a list; treat this as a mandatory preference-analysis trigger,
 - asks for a deeper summary of certain messages or topics,
 - replies, forwards, saves, or asks follow-up questions about a message,
 - says a topic, sender type, domain, newsletter, alert, or knowledge area is useful.

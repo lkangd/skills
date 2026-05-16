@@ -1,6 +1,6 @@
 ---
 name: mail-cli
-description: This skill is for email tasks using the himalaya CLI: checking inbox/unread mail, searching messages, summarizing or reading threads, handling attachments, composing/replying/forwarding, archiving/moving/deleting/flagging, and reviewing a day's mail for items interesting or useful to the user. Use it for mail, email, inbox, unread messages, replies, sending email, searching messages, requests to review today's mail, find useful emails, decide what to read in an inbox, daily mail reviews, useful-content triage, and personalized interest-based email summaries.
+description: This skill is for email tasks using the himalaya CLI: checking inbox/unread mail, searching messages, summarizing or reading threads, opening or expanding selected emails, message groups, or topics, handling attachments, composing/replying/forwarding, archiving/moving/deleting/flagging, and reviewing a day's mail for items interesting or useful to the user. Use it for mail, email, inbox, unread messages, replies, sending email, searching messages, requests to open or expand selected emails, message groups, or topics, requests to review today's mail, find useful emails, decide what to read in an inbox, daily mail reviews, useful-content triage, and personalized interest-based email summaries.
 ---
 
 # Mail CLI Skill (himalaya)
@@ -32,11 +32,12 @@ Keep these rules in working memory even if you never open the reference files.
 8. **Confirm before send.** Show the full outgoing draft and wait for an unambiguous send confirmation.
 9. **Confirm before destructive actions.** For delete, move, expunge, purge, flag changes, or folder deletion, recap the exact `account + folder + IDs + action` and ask first.
 10. **Operate on one account at a time** unless the user explicitly asks for all mailboxes.
-11. **Record interest signals when the user reveals preferences.** Save durable observations about which mail they open, ask to expand, summarize, explicitly dismiss, or repeatedly archive unread so future broad reviews can be personalized.
-12. **Keep interest records local and non-secret.** Store only patterns, categories, title/content traits, and knowledge domains; do not copy full email bodies, credentials, private addresses, or sensitive personal data into preference files.
-13. **Chunk large actions.** If acting on more than 50 messages, split into batches.
-14. **Do not edit config or expose secrets.** Never modify `config.toml`; never put passwords or tokens on the command line.
-15. **Do not invent mailbox facts.** If no match exists, say so explicitly instead of inventing results, drafts, or recipients.
+11. **Run preference analysis when the user asks to expand/open selected emails, message groups, or topics.** Treat requests to expand/open specific messages, message groups, or themes from a list as explicit interest signals; analyze reusable traits and record a durable pattern when privacy-safe.
+12. **Record interest signals when the user reveals preferences.** Save durable observations about which mail they open, ask to expand, summarize, explicitly dismiss, or repeatedly archive unread so future broad reviews can be personalized.
+13. **Keep interest records local and non-secret.** Store only patterns, categories, title/content traits, and knowledge domains; do not copy full email bodies, credentials, private addresses, or sensitive personal data into preference files.
+14. **Chunk large actions.** If acting on more than 50 messages, split into batches.
+15. **Do not edit config or expose secrets.** Never modify `config.toml`; never put passwords or tokens on the command line.
+16. **Do not invent mailbox facts.** If no match exists, say so explicitly instead of inventing results, drafts, or recipients.
 
 ## Session-start check
 
@@ -75,6 +76,7 @@ Use this flow when the user asks to review a day's mail broadly and list what is
 - Read `.claude/himalaya.local.md` from the current workspace root if it exists; if the workspace root is unclear, ask before creating a preference file.
 - List candidate envelopes without changing state, then preview prioritized, sampled, or operationally important candidates with `--preview`.
 - Return a ranked list with message IDs, why each item may matter, and which preference pattern matched.
+- When the user asks to expand specific items, message groups, or themes, enter preference analysis and update the preference record when privacy-safe.
 - Ask which items to expand or archive so the preference record can improve.
 
 See `references/personalized-triage.md` for the detailed workflow, signal rules, privacy guardrails, and preference-file template usage.
@@ -117,7 +119,7 @@ See `references/command-patterns.md` for the command forms.
 
 ## Interest pattern memory
 
-When the user reveals durable email preferences, maintain `.claude/himalaya.local.md` at the current workspace root. Store only reusable patterns, categories, title/content traits, knowledge domains, the user action that revealed the signal, and the date.
+When the user asks to expand/open specific messages, message groups, or themes from a list, enter preference analysis before responding: identify reusable traits behind the selection, decide whether the signal is durable and privacy-safe, and maintain `.claude/himalaya.local.md` at the current workspace root when recording is appropriate. Also maintain the file when the user otherwise reveals durable email preferences. Store only reusable patterns, categories, title/content traits, knowledge domains, the user action that revealed the signal, and the date.
 
 Before first creating the file, ask for explicit confirmation and explain what will be stored. If the workspace root is unclear, ask where to store the file. After each update, mention the pattern recorded. Do not copy full email bodies, credentials, private addresses, sensitive personal data, or inferred sensitive personal attributes.
 
@@ -145,3 +147,4 @@ Open additional files only when needed:
 - Do not silently mark messages as seen during analysis.
 - Do not send email in the same turn you first draft it.
 - Do not edit the user's himalaya configuration.
+- Do not state mailbox state (e.g. "inbox is empty") from memory. Always run the corresponding query command first and report from actual output.
