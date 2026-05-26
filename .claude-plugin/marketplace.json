@@ -73,6 +73,17 @@
         "email",
         "himalaya"
       ]
+    },
+    {
+      "name": "macos-cleanup",
+      "source": "./plugins/macos-cleanup",
+      "description": "macOS cleanup and disk-space recovery workflows using Mole's mo CLI, with dry-run-first safety guidance for cleanup, app uninstall, project artifact purge, installer cleanup, disk analysis, optimization, and health checks.",
+      "category": "macos",
+      "tags": [
+        "macos",
+        "cleanup",
+        "disk-space"
+      ]
     }
   ]
 }

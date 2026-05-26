@@ -1,0 +1,8 @@
+{
+  "name": "macos-cleanup",
+  "description": "macOS cleanup and disk-space recovery workflows using Mole's mo CLI, with dry-run-first safety guidance for cleanup, app uninstall, project artifact purge, installer cleanup, disk analysis, optimization, and health checks.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}
