@@ -1,4 +1,0 @@
-interface:
-  display_name: "Codebase Architecture Analyzer"
-  short_description: "Map architecture and uncover structural risks."
-  default_prompt: "Analyze this codebase architecture end-to-end and summarize structure, boundaries, risks, and improvements."

@@ -1,0 +1,9 @@
+{
+  "name": "codebase-architecture-doc-builder",
+  "description": "Author or refresh a project's ARCHITECTURE.md in the rust-analyzer style: Bird's Eye View, Code Map with Architecture Invariant call-outs, and Cross-Cutting Concerns.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}
+

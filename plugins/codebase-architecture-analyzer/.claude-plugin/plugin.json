@@ -1,9 +1,0 @@
-{
-  "name": "codebase-architecture-analyzer",
-  "description": "Analyze codebase architecture and produce structured reports",
-  "author": {
-    "name": "Curtis Liong",
-    "email": "lkangd@gmail.com"
-  }
-}
-
