@@ -1,0 +1,8 @@
+{
+  "name": "mail-cli",
+  "description": "Email workflows via CLI backends, starting with the himalaya CLI for reading, searching, summarizing, composing, replying, forwarding, and managing mail across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}

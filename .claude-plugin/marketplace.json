@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "codebase-architecture-doc-builder",
-      "source": "./plugins/codebase-architecture-doc-builder",
+      "source": "./plugins/engineering/codebase-architecture-doc-builder",
       "description": "Author or refresh a project's ARCHITECTURE.md in the rust-analyzer style: Bird's Eye View, Code Map with Architecture Invariant call-outs, and Cross-Cutting Concerns.",
       "category": "codebase",
       "tags": [
@@ -19,7 +19,7 @@
     },
     {
       "name": "commit-commands",
-      "source": "./plugins/commit-commands",
+      "source": "./plugins/engineering/commit-commands",
       "description": "Streamline your git workflow with simple commands for committing, pushing, and creating pull requests",
       "category": "git",
       "tags": [
@@ -31,7 +31,7 @@
     },
     {
       "name": "karpathy-guidelines",
-      "source": "./plugins/karpathy-guidelines",
+      "source": "./plugins/engineering/karpathy-guidelines",
       "description": "Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.",
       "category": "code",
       "tags": [
@@ -43,7 +43,7 @@
     },
     {
       "name": "rocky-pal",
-      "source": "./plugins/rocky-pal",
+      "source": "./plugins/persona/rocky-pal",
       "description": "Rocky style plugin with SKILL.md-driven UserPromptSubmit auto-injection and explicit machine-format bypass",
       "category": "code",
       "tags": [
@@ -55,7 +55,7 @@
     },
     {
       "name": "package-release",
-      "source": "./plugins/package-release",
+      "source": "./plugins/engineering/package-release",
       "description": "Automate package versioning and changelog generation using conventional commit standards",
       "category": "package",
       "tags": [
@@ -65,18 +65,19 @@
       ]
     },
     {
-      "name": "himalaya",
-      "source": "./plugins/himalaya",
-      "description": "Drive the himalaya CLI to read, search, summarize, compose, reply, forward, and manage emails across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",
+      "name": "mail-cli",
+      "source": "./plugins/chore/mail-cli",
+      "description": "Email workflows via CLI backends, starting with the himalaya CLI for reading, searching, summarizing, composing, replying, forwarding, and managing mail across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",
       "category": "email",
       "tags": [
         "email",
+        "mail-cli",
         "himalaya"
       ]
     },
     {
       "name": "macos-cleanup",
-      "source": "./plugins/macos-cleanup",
+      "source": "./plugins/chore/macos-cleanup",
       "description": "macOS cleanup and disk-space recovery workflows using Mole's mo CLI, with dry-run-first safety guidance for cleanup, app uninstall, project artifact purge, installer cleanup, disk analysis, optimization, and health checks.",
       "category": "macos",
       "tags": [

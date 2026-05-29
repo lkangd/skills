@@ -115,7 +115,7 @@
 ## 目录结构
 
 ```text
-plugins/rocky-pal/
+plugins/persona/rocky-pal/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── hooks/

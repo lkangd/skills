@@ -38,7 +38,7 @@ mo --help
 当前实现由一个 skill 和若干 reference 文件组成：
 
 ```text
-plugins/macos-cleanup/
+plugins/chore/macos-cleanup/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── README.md
@@ -178,7 +178,7 @@ mo --help
 并验证插件结构：
 
 ```bash
-find plugins/macos-cleanup -maxdepth 5 -type f | sort
+find plugins/chore/macos-cleanup -maxdepth 5 -type f | sort
 ```
 
 如果使用插件校验工具，应确认：

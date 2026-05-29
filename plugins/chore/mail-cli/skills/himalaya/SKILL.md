@@ -1,9 +1,9 @@
 ---
-name: mail-cli
+name: himalaya
 description: This skill is for email tasks using the himalaya CLI: checking inbox/unread mail, searching messages, summarizing or reading threads, opening or expanding selected emails, message groups, or topics, handling attachments, composing/replying/forwarding, archiving/moving/deleting/flagging, and reviewing a day's mail for items interesting or useful to the user. Use it for mail, email, inbox, unread messages, replies, sending email, searching messages, requests to open or expand selected emails, message groups, or topics, requests to review today's mail, find useful emails, decide what to read in an inbox, daily mail reviews, useful-content triage, and personalized interest-based email summaries.
 ---
 
-# Mail CLI Skill (himalaya)
+# Himalaya Mail CLI Skill
 
 Use `himalaya` in a non-interactive, parseable way so agents can safely inspect and manage the user's email.
 
