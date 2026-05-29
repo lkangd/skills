@@ -1,5 +1,5 @@
 {
-  "name": "curtis-skills",
+  "name": "lkangd-skills",
   "owner": {
     "name": "Curtis Liong",
     "email": "lkangd@gmail.com"
@@ -9,7 +9,7 @@
       "name": "codebase-architecture-doc-builder",
       "source": "./plugins/engineering/codebase-architecture-doc-builder",
       "description": "Author or refresh a project's ARCHITECTURE.md in the rust-analyzer style: Bird's Eye View, Code Map with Architecture Invariant call-outs, and Cross-Cutting Concerns.",
-      "category": "codebase",
+      "category": "engineering",
       "tags": [
         "codebase",
         "architecture",
@@ -21,7 +21,7 @@
       "name": "commit-commands",
       "source": "./plugins/engineering/commit-commands",
       "description": "Streamline your git workflow with simple commands for committing, pushing, and creating pull requests",
-      "category": "git",
+      "category": "engineering",
       "tags": [
         "git",
         "commit",
@@ -33,7 +33,7 @@
       "name": "karpathy-guidelines",
       "source": "./plugins/engineering/karpathy-guidelines",
       "description": "Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.",
-      "category": "code",
+      "category": "engineering",
       "tags": [
         "code",
         "llm",
@@ -45,7 +45,7 @@
       "name": "rocky-pal",
       "source": "./plugins/persona/rocky-pal",
       "description": "Rocky style plugin with SKILL.md-driven UserPromptSubmit auto-injection and explicit machine-format bypass",
-      "category": "code",
+      "category": "persona",
       "tags": [
         "code",
         "llm",
@@ -57,7 +57,7 @@
       "name": "package-release",
       "source": "./plugins/engineering/package-release",
       "description": "Automate package versioning and changelog generation using conventional commit standards",
-      "category": "package",
+      "category": "engineering",
       "tags": [
         "package",
         "version",
@@ -68,7 +68,7 @@
       "name": "mail-cli",
       "source": "./plugins/chore/mail-cli",
       "description": "Email workflows via CLI backends, starting with the himalaya CLI for reading, searching, summarizing, composing, replying, forwarding, and managing mail across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",
-      "category": "email",
+      "category": "chore",
       "tags": [
         "email",
         "mail-cli",
@@ -79,7 +79,7 @@
       "name": "macos-cleanup",
       "source": "./plugins/chore/macos-cleanup",
       "description": "macOS cleanup and disk-space recovery workflows using Mole's mo CLI, with dry-run-first safety guidance for cleanup, app uninstall, project artifact purge, installer cleanup, disk analysis, optimization, and health checks.",
-      "category": "macos",
+      "category": "chore",
       "tags": [
         "macos",
         "cleanup",
