@@ -65,6 +65,18 @@
       ]
     },
     {
+      "name": "handoff",
+      "source": "./plugins/engineering/handoff",
+      "description": "Compact the current conversation into a handoff document for another agent to pick up.",
+      "category": "engineering",
+      "tags": [
+        "handoff",
+        "agent",
+        "context",
+        "conversation"
+      ]
+    },
+    {
       "name": "mail-cli",
       "source": "./plugins/chore/mail-cli",
       "description": "Email workflows via CLI backends, starting with the himalaya CLI for reading, searching, summarizing, composing, replying, forwarding, and managing mail across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",
