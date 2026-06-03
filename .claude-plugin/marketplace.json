@@ -77,6 +77,18 @@
       ]
     },
     {
+      "name": "npm-package-evaluate",
+      "source": "./plugins/engineering/npm-package-evaluate",
+      "description": "Evaluate npm packages before installation using supply-chain, maintenance, provenance, dependency footprint, and code-quality signals, with cached agent-friendly reports.",
+      "category": "engineering",
+      "tags": [
+        "npm",
+        "package",
+        "security",
+        "supply-chain"
+      ]
+    },
+    {
       "name": "mail-cli",
       "source": "./plugins/chore/mail-cli",
       "description": "Email workflows via CLI backends, starting with the himalaya CLI for reading, searching, summarizing, composing, replying, forwarding, and managing mail across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",

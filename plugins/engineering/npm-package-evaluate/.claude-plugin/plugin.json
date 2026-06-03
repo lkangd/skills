@@ -1,0 +1,8 @@
+{
+  "name": "npm-package-evaluate",
+  "description": "Evaluate npm packages before installation using supply-chain, maintenance, provenance, dependency footprint, and code-quality signals, with cached agent-friendly reports.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}
