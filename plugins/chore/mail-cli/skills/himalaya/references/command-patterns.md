@@ -82,6 +82,7 @@ Notes:
 - `message delete` is typically a move to Trash, not permanent deletion.
 - `expunge`, `purge`, and folder deletion are high-risk and always require confirmation.
 - For bulk actions, list matching IDs first and then ask.
+- After you previewed or read specific ID(s) for the user in this conversation and they ask to archive/move only those messages, move immediately with a one-line recap; do not wait for `confirm`.
 
 ## Send, reply, and forward
 

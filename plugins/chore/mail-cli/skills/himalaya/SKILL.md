@@ -30,7 +30,7 @@ Keep these rules in working memory even if you never open the reference files.
 6. **Never use interactive composer commands.** Do not run `message write`, `message reply`, `message forward`, or `account configure`.
 7. **For new mail, replies, and forwards, use only stdin/template-based send flows.** Do not improvise editor-based compose paths.
 8. **Confirm before send.** Show the full outgoing draft and wait for an unambiguous send confirmation.
-9. **Confirm before destructive actions.** For delete, move, expunge, purge, flag changes, or folder deletion, recap the exact `account + folder + IDs + action` and ask first.
+9. **Confirm before destructive actions.** For delete, move, expunge, purge, flag changes, or folder deletion, recap the exact `account + folder + IDs + action` and ask first — **except** post-read archive/move: if you already previewed or read specific message(s) for the user in this conversation (with IDs visible) and they now clearly ask to archive or move only those same ID(s), run the move after a one-line recap without waiting for confirmation. Bulk, search-result, or unseen-mail moves still require confirmation.
 10. **Operate on one account at a time** unless the user explicitly asks for all mailboxes.
 11. **Run preference analysis when the user asks to expand/open selected emails, message groups, or topics.** Treat requests to expand/open specific messages, message groups, or themes from a list as explicit interest signals; analyze reusable traits and record a durable pattern when privacy-safe.
 12. **Record interest signals when the user reveals preferences.** Save durable observations about which mail they open, ask to expand, summarize, explicitly dismiss, or repeatedly archive unread so future broad reviews can be personalized.
@@ -109,13 +109,12 @@ See `references/command-patterns.md` and `references/workflows.md` for the comma
 
 ### Archive, move, delete, expunge, purge, or flag
 
-- Dry-run or list matching IDs first.
-- Recap the exact action, account, folder, target, and IDs.
-- Ask for confirmation.
+- Dry-run or list matching IDs first for bulk or unseen mail.
+- Recap the exact action, account, folder, target, and IDs; ask for confirmation unless the post-read single-archive exception in rule 9 applies.
 - If the user archives or deletes messages without opening their content, treat that as a weak low-interest signal; record shared traits only when the pattern is repeated or the user confirms the reason.
 
-Use `templates/destructive-action-confirmation.md` for the exact recap block.
-See `references/command-patterns.md` for the command forms.
+Use `templates/destructive-action-confirmation.md` for the exact recap block when confirmation is required.
+See `references/workflows.md` (archive sections) and `references/command-patterns.md` for the command forms.
 
 ## Interest pattern memory
 

@@ -25,10 +25,24 @@ himalaya message read -a <acc> --preview --no-headers <IDs...>
 
 ## Archive or move old mail
 
+### Bulk or unseen mail (confirmation required)
+
+Use when the user asks to archive many messages, a date range, a search result, or IDs you have not previewed for them in this conversation.
+
 1. Do a dry-run list first.
 2. Show exact IDs and destination folder.
 3. Ask for confirmation.
 4. Move in batches of at most 50 IDs.
+
+### Post-read single archive (no extra confirmation)
+
+Use when the user already asked you to expand/read specific message(s) in this conversation, you showed the preview or body with visible ID(s), and they now unambiguously ask to archive or move **only those** message(s) (e.g. "归档", "archive this", "把这封移走").
+
+1. Recap briefly: account, source folder, destination folder, and the exact ID(s) — one line is enough.
+2. Run the move immediately. Do not use `templates/destructive-action-confirmation.md` or wait for `confirm`.
+3. Report success or failure from command output.
+
+Still ask for confirmation if the target is unclear, multiple unrelated IDs are involved, or the user might mean a bulk rule instead of the message(s) they just read.
 
 ## Reply to a message
 
