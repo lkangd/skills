@@ -140,6 +140,38 @@ Open additional files only when needed:
 - `templates/interest-patterns.md` — starter structure for `.claude/himalaya.local.md`
 - `scripts/normalize_envelopes.py` — deterministic formatter for Himalaya envelope JSON when a stable compact table is useful
 
+## Common pitfalls
+
+These are known failure modes that agents have hit in production. Treat them as mandatory guardrails.
+
+### Empty-envelope false negatives
+
+Some IMAP servers (notably QQ, 163, 126) occasionally return `[]` from `envelope list` even when the mailbox is non-empty. The IMAP `SELECT` response may correctly show `exists: N > 0` while the subsequent FETCH returns nothing.
+
+**Prevention:**
+
+- If `envelope list` returns `[]`, always retry once with `--page-size 50`.
+- If still empty, run with `--debug` and check the `SelectData` `exists` field. A non-zero `exists` with zero envelopes = parse/transport bug, not an empty mailbox.
+- Report the discrepancy to the user. Never declare an inbox empty from a single `[]` result.
+
+### Cross-account email aggregation
+
+Chinese email providers (QQ, 163, 126) support POP3/IMAP aggregation — they fetch mail from other accounts (e.g. Gmail) and store copies locally. This means querying account A may return envelopes whose `to` / `from` addresses all belong to account B.
+
+**Prevention:**
+
+- After listing envelopes, spot-check the `to` / `from` addresses.
+- If every envelope's recipient address belongs to a *different* account, the mailbox is likely aggregating. Flag this to the user and confirm it is expected before proceeding with triage or archival.
+
+### Transient IMAP instability
+
+Chinese email providers' IMAP servers are less stable than Gmail/Outlook. Symptoms: empty FETCH responses, dropped connections, delayed responses.
+
+**Prevention:**
+
+- If results look wrong or empty, retry with `--page-size` or wait a moment before concluding.
+- Do not treat a single anomalous query as ground truth.
+
 ## What not to do
 
 - Do not invent account names, folder names, or recipient addresses.
