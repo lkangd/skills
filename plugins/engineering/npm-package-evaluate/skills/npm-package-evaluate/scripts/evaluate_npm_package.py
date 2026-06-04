@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 CACHE_ROOT = Path(os.environ.get("TMPDIR") or "/tmp") / "claude-npm-package-evaluate"
+SCHEMA_VERSION = "1.2"
 BOT_NAME_RE = re.compile(r"(bot|dependabot|renovate|github-actions)", re.I)
 INSTALL_SCRIPT_RE = re.compile(r"(^|:)(preinstall|install|postinstall)$")
 SUSPICIOUS_SCRIPT_RE = re.compile(
@@ -33,7 +34,14 @@ SUSPICIOUS_SCRIPT_RE = re.compile(
     r"base64|atob|eval\(|Function\(|child_process|rm\s+-rf|chmod\s+\+x|ssh|scp|token|secret|password)",
     re.I,
 )
+SUSPICIOUS_SOURCE_RE = re.compile(
+    r"(child_process|execSync|spawnSync|process\.env|os\.homedir|\.npmrc|eval\(|Function\(|"
+    r"atob|fromCharCode|base64|curl|wget|powershell|token|secret|password|private[_-]?key)"
+)
 SUSPICIOUS_FILE_RE = re.compile(r"(\.npmrc$|id_rsa|\.pem$|\.p12$|\.key$|token|secret|password)", re.I)
+SOURCE_FILE_RE = re.compile(r"\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$", re.I)
+NATIVE_BINARY_RE = re.compile(r"\.(node|wasm|dll|dylib|exe|so)$", re.I)
+NATIVE_BUILD_RE = re.compile(r"(^|/)(binding\.gyp|CMakeLists\.txt|Makefile)$|\.(cc|cpp|cxx|h|hpp)$", re.I)
 ACTION_USE_RE = re.compile(r"uses:\s*([^\s#]+)")
 FULL_SHA_RE = re.compile(r"@[0-9a-f]{40}$", re.I)
 MUTABLE_ACTION_RE = re.compile(r"@(main|master|latest|v\d+|v\d+\.\d+|v\d+\.\d+\.\d+)$", re.I)
@@ -113,11 +121,48 @@ def days_since(iso_like: str | None) -> int | None:
         return None
 
 
+def parse_time(iso_like: str | None) -> dt.datetime | None:
+    if not iso_like:
+        return None
+    try:
+        return dt.datetime.fromisoformat(iso_like.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def signal(sig_id: str, status: str, severity: str, message: str, evidence: Any = None) -> dict[str, Any]:
     result = {"id": sig_id, "status": status, "severity": severity, "message": message}
     if evidence is not None:
         result["evidence"] = evidence
     return result
+
+
+def lockfile_package_name(path: str) -> str:
+    parts = path.split("node_modules/")
+    if len(parts) < 2:
+        return path or "root"
+    name = parts[-1]
+    if name.startswith("@"):
+        scope_parts = name.split("/", 2)
+        return "/".join(scope_parts[:2])
+    return name.split("/", 1)[0]
+
+
+def npm_registry_host(url: str, allowed_hosts: set[str] | None = None) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+    expected_hosts = allowed_hosts or {"registry.npmjs.org", "registry.npmjs.com"}
+    return host in expected_hosts
+
+
+def npm_registry_hosts() -> set[str]:
+    hosts = {"registry.npmjs.org", "registry.npmjs.com"}
+    code, out, _ = run(["npm", "config", "get", "registry"], timeout=20)
+    if code == 0:
+        parsed = urllib.parse.urlparse(out.strip())
+        if parsed.netloc:
+            hosts.add(parsed.netloc.lower())
+    return hosts
 
 
 def extract_repo_url(meta: dict[str, Any]) -> str | None:
@@ -316,6 +361,8 @@ def pack_and_inspect(specifier: str, temp_root: Path) -> tuple[list[dict[str, An
 
     package_json: dict[str, Any] | None = None
     suspicious_files: list[str] = []
+    suspicious_source_hits: list[str] = []
+    native_files: list[str] = []
     workflow_files: dict[str, str] = {}
     sample_files: list[str] = []
 
@@ -329,6 +376,15 @@ def pack_and_inspect(specifier: str, temp_root: Path) -> tuple[list[dict[str, An
                 sample_files.append(rel)
             if SUSPICIOUS_FILE_RE.search(rel):
                 suspicious_files.append(rel)
+            if NATIVE_BINARY_RE.search(rel) or NATIVE_BUILD_RE.search(rel):
+                native_files.append(rel)
+            if member.isfile() and SOURCE_FILE_RE.search(rel) and member.size <= 250_000 and len(suspicious_source_hits) < 20:
+                f = tar.extractfile(member)
+                if f:
+                    text = f.read().decode("utf-8", errors="replace")
+                    match = SUSPICIOUS_SOURCE_RE.search(text)
+                    if match:
+                        suspicious_source_hits.append(f"{rel}: {match.group(0)}")
             if rel == "package.json":
                 f = tar.extractfile(member)
                 if f:
@@ -377,6 +433,18 @@ def pack_and_inspect(specifier: str, temp_root: Path) -> tuple[list[dict[str, An
             signals.append(signal("modern_exports", "yellow", "medium", "package.json has no exports or main field."))
         if types:
             signals.append(signal("types", "green", "low", "Package declares TypeScript types."))
+
+        bin_entries = package_json.get("bin")
+        if bin_entries:
+            signals.append(signal("executable_entrypoints", "yellow", "medium", "Package exposes command-line binaries; review executable behavior before broad use.", bin_entries))
+
+        optional_deps = package_json.get("optionalDependencies") if isinstance(package_json.get("optionalDependencies"), dict) else {}
+        if optional_deps:
+            signals.append(signal("optional_dependencies", "yellow", "medium", f"Package declares {len(optional_deps)} optional dependencies; review platform-specific install surface.", list(optional_deps)[:20]))
+
+        bundled_deps = package_json.get("bundledDependencies") or package_json.get("bundleDependencies")
+        if bundled_deps:
+            signals.append(signal("bundled_dependencies", "yellow", "high", "Package bundles dependencies into the published artifact; audit visibility may be reduced.", bundled_deps))
     else:
         signals.append(signal("package_json", "red", "critical", "Tarball did not contain package/package.json."))
 
@@ -384,6 +452,16 @@ def pack_and_inspect(specifier: str, temp_root: Path) -> tuple[list[dict[str, An
         signals.append(signal("suspicious_files", "red", "high", "Tarball contains sensitive-looking file names.", suspicious_files[:20]))
     else:
         signals.append(signal("suspicious_files", "green", "low", "No sensitive-looking file names found in sampled tarball contents."))
+
+    if native_files:
+        signals.append(signal("native_or_binary_surface", "yellow", "high", "Tarball contains native build files or binary artifacts; verify they are expected for this package.", native_files[:20]))
+    else:
+        signals.append(signal("native_or_binary_surface", "green", "low", "No native build files or binary artifacts found in sampled tarball contents."))
+
+    if suspicious_source_hits:
+        signals.append(signal("suspicious_source_tokens", "yellow", "medium", "Published source contains sensitive capability tokens; inspect whether the usage is justified.", suspicious_source_hits[:20]))
+    else:
+        signals.append(signal("suspicious_source_tokens", "green", "low", "No sensitive capability tokens found in sampled source files."))
 
     if workflow_files:
         mutable_refs: list[str] = []
@@ -437,7 +515,18 @@ def inspect_registry(specifier: str, context: str) -> tuple[str, str, list[dict[
     created_days = days_since(time_data.get("created"))
     modified_days = days_since(time_data.get("modified"))
     version_days = days_since(time_data.get(version))
+    version_dates = sorted(
+        (key, parsed)
+        for key, value in time_data.items()
+        if key not in {"created", "modified"} and (parsed := parse_time(value)) is not None
+    )
+    version_dates.sort(key=lambda item: item[1])
+    version_index = next((idx for idx, item in enumerate(version_dates) if item[0] == version), None)
+    release_gap_days = None
+    if version_index is not None and version_index > 0:
+        release_gap_days = (version_dates[version_index][1] - version_dates[version_index - 1][1]).days
     details["age_days"] = {"created": created_days, "modified": modified_days, "version": version_days}
+    details["release_gap_days_before_version"] = release_gap_days
 
     if created_days is not None and created_days < 30:
         signals.append(signal("package_history", "red", "high", f"Package was created only {created_days} days ago; high slopsquatting/novelty risk."))
@@ -447,6 +536,16 @@ def inspect_registry(specifier: str, context: str) -> tuple[str, str, list[dict[
         signals.append(signal("package_history", "green", "low", f"Package has registry history: created {created_days} days ago."))
     else:
         signals.append(signal("package_history", "unknown", "medium", "Could not determine package creation date."))
+
+    if version_days is not None and version_days <= 2:
+        signals.append(signal("new_version", "yellow", "high", f"Requested version was published only {version_days} days ago; inspect release diff before installing."))
+    elif version_days is not None and version_days <= 14:
+        signals.append(signal("new_version", "yellow", "medium", f"Requested version is recent: published {version_days} days ago."))
+    elif version_days is not None:
+        signals.append(signal("new_version", "green", "low", f"Requested version has been published for {version_days} days."))
+
+    if release_gap_days is not None and release_gap_days >= 365 and version_days is not None and version_days <= 30:
+        signals.append(signal("release_gap_anomaly", "yellow", "high", f"Package released this version after a {release_gap_days}-day gap; inspect for maintainer compromise or unexpected changes."))
 
     if modified_days is not None and modified_days <= 180:
         signals.append(signal("release_activity", "green", "low", f"Package registry metadata changed {modified_days} days ago."))
@@ -468,7 +567,7 @@ def inspect_registry(specifier: str, context: str) -> tuple[str, str, list[dict[
     if provenance:
         signals.append(signal("provenance", "green", "low", "npm metadata exposes attestation/provenance-related data."))
     else:
-        signals.append(signal("provenance", "unknown", "medium", "npm CLI metadata did not expose provenance. Manually check npmjs.com or run npm audit signatures after install if needed."))
+        signals.append(signal("provenance", "unknown", "low", "npm CLI metadata did not expose provenance. Manually check npmjs.com or run npm audit signatures after install if needed."))
 
     maintainers = meta.get("maintainers") if isinstance(meta.get("maintainers"), list) else []
     if len(maintainers) >= 3:
@@ -492,17 +591,74 @@ def vulnerability_check(specifier: str, temp_root: Path) -> tuple[list[dict[str,
     details: dict[str, Any] = {"install_lock_code": code, "install_lock_error": err.strip()[:1000]}
     if code != 0:
         return [signal("vulnerabilities", "unknown", "medium", "Could not create isolated package-lock for npm audit.", details["install_lock_error"])], details
-    code, out, err = run(["npm", "audit", "--json"], cwd=audit_dir, timeout=120)
+
+    signals: list[dict[str, Any]] = []
+    lock_path = audit_dir / "package-lock.json"
     try:
-        audit = json.loads(out or "{}")
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
     except Exception:
-        audit = {}
+        lock = {}
+    packages = lock.get("packages", {}) if isinstance(lock, dict) and isinstance(lock.get("packages"), dict) else {}
+    dependency_entries = {path: data for path, data in packages.items() if path and isinstance(data, dict)}
+    package_count = len(dependency_entries)
+    max_depth = max((path.count("node_modules/") for path in dependency_entries), default=0)
+    install_script_packages = [lockfile_package_name(path) for path, data in dependency_entries.items() if data.get("hasInstallScript")]
+    deprecated_packages = [lockfile_package_name(path) for path, data in dependency_entries.items() if data.get("deprecated")]
+    non_registry_sources = []
+    allowed_registry_hosts = npm_registry_hosts()
+    for path, data in dependency_entries.items():
+        resolved = data.get("resolved")
+        if isinstance(resolved, str) and urllib.parse.urlparse(resolved).scheme in {"http", "https"} and not npm_registry_host(resolved, allowed_registry_hosts):
+            non_registry_sources.append({"package": lockfile_package_name(path), "resolved": resolved})
+    details["lockfile_summary"] = {
+        "package_count": package_count,
+        "max_depth": max_depth,
+        "allowed_registry_hosts": sorted(allowed_registry_hosts),
+        "install_script_packages": install_script_packages[:50],
+        "deprecated_packages": deprecated_packages[:50],
+        "non_registry_sources": non_registry_sources[:50],
+    }
+
+    if package_count <= 20:
+        signals.append(signal("transitive_dependency_tree", "green", "low", f"Isolated lockfile contains {package_count} package(s).", details["lockfile_summary"]))
+    elif package_count <= 100:
+        signals.append(signal("transitive_dependency_tree", "yellow", "medium", f"Isolated lockfile contains {package_count} package(s); review transitive footprint.", details["lockfile_summary"]))
+    else:
+        signals.append(signal("transitive_dependency_tree", "red", "high", f"Isolated lockfile contains {package_count} package(s); large transitive attack surface.", details["lockfile_summary"]))
+
+    if install_script_packages:
+        signals.append(signal("transitive_install_scripts", "yellow", "high", "One or more transitive packages declare lifecycle install scripts.", install_script_packages[:50]))
+    else:
+        signals.append(signal("transitive_install_scripts", "green", "low", "No transitive lifecycle install scripts found in the isolated lockfile."))
+
+    if deprecated_packages:
+        signals.append(signal("transitive_deprecated", "yellow", "medium", "One or more transitive packages are deprecated.", deprecated_packages[:50]))
+
+    if non_registry_sources:
+        signals.append(signal("lockfile_sources", "red", "high", "Isolated lockfile resolves packages from non-npm registry hosts.", non_registry_sources[:20]))
+    else:
+        signals.append(signal("lockfile_sources", "green", "low", "Isolated lockfile resolved packages from expected npm registry host(s)."))
+
+    code, out, err = run(["npm", "audit", "--json"], cwd=audit_dir, timeout=120)
+    audit_parse_error = None
+    try:
+        audit = json.loads(out) if out.strip() else None
+    except Exception as exc:
+        audit = None
+        audit_parse_error = str(exc)
     details["audit"] = audit
+    details["audit_code"] = code
+    details["audit_error"] = err.strip()[:1000]
+    if audit_parse_error:
+        details["audit_parse_error"] = audit_parse_error
     metadata = audit.get("metadata", {}) if isinstance(audit, dict) else {}
-    vulns = metadata.get("vulnerabilities", {}) if isinstance(metadata, dict) else {}
-    total = sum(int(v or 0) for v in vulns.values()) if isinstance(vulns, dict) else 0
-    high = int(vulns.get("high", 0) or 0) if isinstance(vulns, dict) else 0
-    critical = int(vulns.get("critical", 0) or 0) if isinstance(vulns, dict) else 0
+    vulns = metadata.get("vulnerabilities") if isinstance(metadata, dict) else None
+    if not isinstance(vulns, dict):
+        evidence = {"exit_code": code, "stderr": details["audit_error"], "parse_error": audit_parse_error}
+        return signals + [signal("vulnerabilities", "unknown", "medium", "npm audit did not return parseable vulnerability metadata.", evidence)], details
+    total = sum(int(v or 0) for v in vulns.values())
+    high = int(vulns.get("high", 0) or 0)
+    critical = int(vulns.get("critical", 0) or 0)
     if critical:
         sig = signal("vulnerabilities", "red", "critical", f"npm audit reports {critical} critical vulnerabilities.", vulns)
     elif high:
@@ -511,7 +667,7 @@ def vulnerability_check(specifier: str, temp_root: Path) -> tuple[list[dict[str,
         sig = signal("vulnerabilities", "yellow", "medium", f"npm audit reports {total} vulnerabilities.", vulns)
     else:
         sig = signal("vulnerabilities", "green", "low", "npm audit reports no known vulnerabilities for the isolated dependency tree.", vulns)
-    return [sig], details
+    return signals + [sig], details
 
 
 def score(signals: list[dict[str, Any]], context: str) -> dict[str, Any]:
@@ -519,6 +675,7 @@ def score(signals: list[dict[str, Any]], context: str) -> dict[str, Any]:
     status_factor = {"green": 0, "unknown": 1, "yellow": 1, "red": 2}
     total = 0
     blockers: list[str] = []
+    blocker_severities: list[str] = []
     concerns: list[str] = []
     for sig in signals:
         status = sig.get("status")
@@ -530,12 +687,13 @@ def score(signals: list[dict[str, Any]], context: str) -> dict[str, Any]:
         total += points
         if status == "red" and severity in {"high", "critical"}:
             blockers.append(f"{sig.get('id')}: {sig.get('message')}")
+            blocker_severities.append(str(severity))
         elif status in {"yellow", "unknown"} and severity in {"medium", "high", "critical"}:
             concerns.append(f"{sig.get('id')}: {sig.get('message')}")
 
     if blockers or total >= 35:
         recommendation = "block"
-        risk_level = "critical" if any("critical" in b for b in blockers) or total >= 50 else "high"
+        risk_level = "critical" if "critical" in blocker_severities or total >= 50 else "high"
     elif total >= 16 or concerns:
         recommendation = "review"
         risk_level = "medium" if total < 28 else "high"
@@ -565,6 +723,8 @@ def requested_options(include_github: bool, include_audit: bool) -> dict[str, bo
 
 
 def cached_options_satisfy(cached: dict[str, Any], requested: dict[str, bool]) -> bool:
+    if cached.get("schema_version") != SCHEMA_VERSION:
+        return False
     cached_options = cached.get("evaluation_options", {}) if isinstance(cached, dict) else {}
     return all(not requested.get(key, False) or bool(cached_options.get(key)) for key in requested)
 
@@ -584,7 +744,7 @@ def build_report_from_facts(
     target = dict(facts.get("target", {}))
     target.update({"requested": requested_specifier, "requested_version": requested_version})
     report = {
-        "schema_version": "1.1",
+        "schema_version": SCHEMA_VERSION,
         "generated_at": now_iso(),
         "source_article": facts.get("source_article"),
         "target": target,
@@ -640,7 +800,7 @@ def evaluate(specifier: str, context: str, refresh: bool, include_github: bool, 
 
     all_signals = registry_signals + pack_signals + repo_signals + audit_signals + github_signals
     facts = {
-        "schema_version": "1.1",
+        "schema_version": SCHEMA_VERSION,
         "facts_generated_at": now_iso(),
         "source_article": "https://blog.gaborkoos.com/posts/2026-05-29-How-to-Evaluate-an-npm-Package-2026-Edition/",
         "target": {"name": name, "version": version, "specifier": f"{name}@{version}"},

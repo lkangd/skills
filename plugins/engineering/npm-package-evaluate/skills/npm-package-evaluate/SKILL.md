@@ -7,7 +7,7 @@ description: This skill should be used before an agent installs or adds an npm d
 
 Use this skill as a dependency gate before installing an npm package. The goal is not to prove a package is safe; it is to make the installation decision explicit, repeatable, and auditable.
 
-The core workflow is automated by [`scripts/evaluate_npm_package.py`](scripts/evaluate_npm_package.py). It gathers npm registry metadata, downloads the package tarball with lifecycle scripts disabled for static inspection, optionally inspects the GitHub repository, optionally creates an isolated temporary package-lock for `npm audit`, caches package facts in the temp directory, and prints a concise decision summary for the current usage context.
+The core workflow is automated by [`scripts/evaluate_npm_package.py`](scripts/evaluate_npm_package.py). It gathers npm registry metadata, checks release-age anomalies, downloads the package tarball with lifecycle scripts disabled for static inspection, scans execution surfaces such as install scripts, CLI entrypoints, native/binary files, bundled/optional dependencies, and sensitive source-code tokens, optionally inspects the GitHub repository, optionally creates an isolated temporary package-lock for transitive dependency/source/lifecycle-script checks plus `npm audit`, caches package facts in the temp directory, and prints a concise decision summary for the current usage context.
 
 ## Quick start
 
@@ -20,7 +20,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/evaluate_npm_package.py" <package[@version]
 Examples:
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/scripts/evaluate_npm_package.py" lodash@4.17.21 --context prod --necessity "date formatting replacement under consideration"
+python3 "${CLAUDE_SKILL_DIR}/scripts/evaluate_npm_package.py" date-fns@latest --context prod --necessity "date formatting replacement under consideration"
 python3 "${CLAUDE_SKILL_DIR}/scripts/evaluate_npm_package.py" @types/node --context dev --necessity "TypeScript declarations for Node APIs"
 python3 "${CLAUDE_SKILL_DIR}/scripts/evaluate_npm_package.py" vite --context tool --json --fail-on review
 ```
@@ -74,6 +74,7 @@ The automated script is conservative and static. It checks signals and indicator
 - **Slopsquatting:** the script checks package existence, age, and history. It does not fully prove that a near-name package is legitimate.
 - **CI and code quality:** the script checks basic CI/code-quality signals such as workflow presence, mutable action refs, `exports`, and `types`. For production-critical dependencies, manually inspect tests, coverage thresholds, lint/typecheck jobs, and TypeScript strictness.
 - **Audit mode:** when enabled, the script creates an isolated temporary project and runs `npm install --package-lock-only --ignore-scripts --no-audit --no-fund` followed by `npm audit --json`. It does not install into the user project and does not run lifecycle scripts.
+- **Static source scanning:** sensitive source-code tokens, native files, CLI entrypoints, bundled dependencies, and transitive install-script signals indicate review-worthy execution surface. They are not automatic proof of malware; inspect whether the behavior is expected for the package type and usage context.
 
 ## Manual follow-up for high-stakes dependencies
 

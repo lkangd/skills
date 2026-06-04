@@ -36,6 +36,8 @@ Use this checklist when the automated evaluator reports `review`, when the depen
   - Avoids long-lived `NPM_TOKEN` secrets when trusted publishing is possible.
 - GitHub Actions are pinned to full commit SHAs, especially third-party actions.
 - Package tarball content matches expectations and contains no surprising generated/minified/obfuscated code for the package type.
+- Check source-to-tarball consistency for high-stakes dependencies: `gitHead`, GitHub release tag/commit, npm provenance, and published tarball should tell the same story.
+- Use `npm diff <package>@<previous> <package>@<current>` when the requested version is new, follows a long release gap, or carries new install scripts/binaries.
 
 ## 4. Install scripts
 
@@ -49,7 +51,22 @@ Red:
 - Network calls, shell downloads, environment-variable reads, credential references, encoded blobs, or opaque scripts.
 - Install scripts in packages that do not clearly need native compilation or binary setup.
 
-## 5. CI and test reality
+## 5. Dependency tree and execution surface
+
+- Inspect the full isolated lockfile, not only direct dependencies: package count, maximum depth, deprecated transitive packages, and non-npm registry `resolved` URLs.
+- Treat transitive lifecycle scripts as seriously as top-level install scripts; they can execute during a normal project install even when the target package has no scripts.
+- Review `bin` entrypoints before accepting a CLI package, especially if it will run in CI, deployment, or developer shells.
+- Review native/binary surfaces: `binding.gyp`, `.node`, WASM, prebuilt binaries, `optionalDependencies`, and `bundledDependencies`.
+- For published source, scan sensitive capabilities such as `child_process`, shell/network downloads, credential/env access, `eval`/`Function`, encoded blobs, and homedir/npm config reads.
+
+## 6. Project compatibility and policy fit
+
+- Check whether the project already has an equivalent dependency or a small local implementation would be safer.
+- Verify `engines.node`, ESM/CJS shape, `exports`, `types`, browser fields, and peer dependency ranges match the current project.
+- Check license compatibility for the direct package and transitive tree; missing or non-SPDX licenses deserve review in commercial or redistributed projects.
+- Confirm the dependency will be isolated enough to remove later if it fails maintenance or security expectations.
+
+## 7. CI and test reality
 
 - CI runs on `pull_request`, not only after merging to the default branch.
 - Recent merged PRs waited for CI.
@@ -57,7 +74,7 @@ Red:
 - Coverage thresholds exist and are enforced (for example 80%+ lines/functions/branches where appropriate).
 - Type checks and lint checks run in CI.
 
-## 6. Visible code quality
+## 8. Visible code quality
 
 - Non-trivial lint configuration exists.
 - `exports` is modern and explicit; TypeScript packages publish `types`.
@@ -66,19 +83,20 @@ Red:
 - `any` and `@ts-ignore` are rare and justified.
 - Public API shape is documented and stable enough for the intended usage.
 
-## 7. Security response posture
+## 9. Security response posture
 
 - `SECURITY.md` or GitHub security policy provides private disclosure instructions and contact details.
 - GitHub advisories, if any, were handled responsibly with clear affected versions and fixes.
 - OSV/Snyk/Socket-style sources do not show unresolved severe issues.
 - Past critical issues were fixed quickly enough for your risk tolerance.
 
-## Fast path: top three checks
+## Fast path: top four checks
 
 When time is limited, check these first:
 
 1. Do you actually need it?
 2. Does the published package have provenance or another trustworthy source-to-publish story?
-3. Does it have unexplained install scripts?
+3. Does the direct or transitive tree have unexplained install scripts?
+4. Does the package introduce CLI, native/binary, bundled, or sensitive source-code execution surface?
 
 For production-critical dependencies, add: are maintainers responsive when something goes wrong?
