@@ -7,8 +7,6 @@ description: This skill should be used before an agent installs or adds an npm d
 
 Use this skill as a dependency gate before installing an npm package. The goal is not to prove a package is safe; it is to make the installation decision explicit, repeatable, and auditable.
 
-This workflow is derived from Gábor Koós, “How to Evaluate an npm Package - 2026 Edition,” with additional npm CLI metadata, audit, and signature/provenance considerations.
-
 The core workflow is automated by [`scripts/evaluate_npm_package.py`](scripts/evaluate_npm_package.py). It gathers npm registry metadata, downloads the package tarball with lifecycle scripts disabled for static inspection, optionally inspects the GitHub repository, optionally creates an isolated temporary package-lock for `npm audit`, caches package facts in the temp directory, and prints a concise decision summary for the current usage context.
 
 ## Quick start
@@ -81,7 +79,7 @@ The automated script is conservative and static. It checks signals and indicator
 
 For production-critical dependencies, also consult:
 
-- [`references/evaluation-checklist.md`](references/evaluation-checklist.md) for the full manual review checklist derived from the article.
+- [`references/evaluation-checklist.md`](references/evaluation-checklist.md) for the full manual review checklist.
 - [`references/decision-rubric.md`](references/decision-rubric.md) for how to convert signals into an install decision.
 - [`references/decision-note-template.md`](references/decision-note-template.md) when you need to leave a human-readable dependency decision in a PR, issue, or conversation. Fill it manually from the JSON report and your necessity rationale.
 

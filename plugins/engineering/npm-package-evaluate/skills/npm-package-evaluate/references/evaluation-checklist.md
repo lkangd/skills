@@ -1,7 +1,5 @@
 # npm package evaluation checklist
 
-Source basis: Gábor Koós, "How to Evaluate an npm Package - 2026 Edition" (2026-05-29), plus npm CLI provenance/signature documentation.
-
 Use this checklist when the automated evaluator reports `review`, when the dependency is production-critical, or when the package touches credentials, network traffic, build/deploy systems, auth, crypto, data storage, or generated code.
 
 ## 0. Necessity and blast radius

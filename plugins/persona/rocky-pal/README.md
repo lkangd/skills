@@ -1,30 +1,30 @@
 # Rocky-Pal Plugin
 
-为 Claude Code 提供自动注入的 Rocky 风格回复能力。
+Automatically inject Rocky-style reply constraints into Claude Code.
 
-这个插件不是靠手动执行命令触发，而是通过 `UserPromptSubmit` hook 在每次用户发言时自动判断：
+This plugin is not triggered by a manual command. A `UserPromptSubmit` hook runs on every user message and decides:
 
-- 普通自然语言请求：注入 Rocky 风格约束
-- 明确要求关闭 Rocky 风格：跳过注入
-- 明确要求纯机器可解析输出（纯 JSON / 纯命令 / 纯补丁）：跳过注入
+- Normal natural-language requests: inject Rocky-style constraints
+- Explicit requests to disable Rocky style: skip injection
+- Explicit requests for machine-parseable-only output (pure JSON / pure command / pure patch): skip injection
 
-插件目标很简单：**只改外层语气，不改技术结论、安全标准和格式要求。**
+The goal is simple: **change outer tone only; do not change technical conclusions, safety standards, or format requirements.**
 
-## 现有实现概览
+## Current implementation
 
-当前实现由两部分组成：
+Two main pieces:
 
 1. `hooks/user_prompt_submit.py`
-   - 读取用户本轮输入
-   - 判断是否需要跳过 Rocky 风格
-   - 从 `skills/rocky-pal/SKILL.md` 提取风格约束
-   - 向 `UserPromptSubmit` 事件返回 `additionalContext`
+   - Reads the current user input
+   - Decides whether to skip Rocky style
+   - Extracts style constraints from `skills/rocky-pal/SKILL.md`
+   - Returns `additionalContext` on the `UserPromptSubmit` event
 
 2. `skills/rocky-pal/SKILL.md`
-   - 作为 Rocky 风格的单一规则来源
-   - 定义硬约束、语气模式、词典、角色背景、降噪策略
+   - Single source of truth for Rocky style rules
+   - Defines hard constraints, tone patterns, dictionary, character background, and noise-reduction strategy
 
-对应的 hook 配置在 `hooks/hooks.json` 中：
+Hook configuration lives in `hooks/hooks.json`:
 
 ```json
 {
@@ -44,75 +44,75 @@
 }
 ```
 
-## 工作方式
+## How it works
 
-### 1. 自动注入
+### 1. Automatic injection
 
-每次用户发送消息时，`user_prompt_submit.py` 会读取事件 JSON，并提取当前 prompt。
+On each user message, `user_prompt_submit.py` reads the event JSON and extracts the current prompt.
 
-默认情况下，插件会构造如下结构的 hook 返回值：
+By default, the hook returns:
 
-- `systemMessage`：随机的 Rocky 风格短句或符号串
-- `hookSpecificOutput.additionalContext`：从 `SKILL.md` 提炼出来的紧凑版风格约束
+- `systemMessage`: a random Rocky-style short line or symbol string
+- `hookSpecificOutput.additionalContext`: a compact style policy distilled from `SKILL.md`
 
-其中 `additionalContext` 会优先提取这些章节：
+`additionalContext` prefers these sections from the skill file:
 
-- `执行流程`
-- `不可破坏的硬约束`
-- `风格模式（沉浸式）`
-- `风格词典`
-- `情绪归纳`
-- `角色背景（用于稳定人设）`
+- `执行流程` (Execution flow)
+- `不可破坏的硬约束` (Non-negotiable hard constraints)
+- `风格模式（沉浸式）` (Immersive style mode)
+- `风格词典` (Style dictionary)
+- `情绪归纳` (Emotional tone summary)
+- `角色背景（用于稳定人设）` (Character background for stable persona)
 
-如果技能文件读取失败，脚本会回退到内置的 `FALLBACK_POLICY`。
+If the skill file cannot be read, the script falls back to built-in `FALLBACK_POLICY`.
 
-### 2. 跳过注入
+### 2. Skip injection
 
-以下情况不会应用 Rocky 风格：
+Rocky style is not applied in these cases:
 
-#### 明确关闭风格
+#### Explicit style disable
 
-命中这类表达时直接返回空对象：
+These phrases return an empty object:
 
-- `关闭洛基风格`
-- `不要 rocky 风格`
+- `关闭洛基风格` (disable Loki/Rocky style)
+- `不要 rocky 风格` (no Rocky style)
 - `disable rocky`
 - `no rocky`
 - `neutral style`
 - `plain tone`
 
-#### 明确要求纯机器格式
+#### Explicit machine-only format
 
-命中这类表达时也会跳过：
+These also skip injection:
 
-- `只要 json`
-- `纯补丁`
-- `严格机器可解析`
+- `只要 json` (JSON only)
+- `纯补丁` (patch only)
+- `严格机器可解析` (strictly machine-parseable)
 - `json only`
 - `command only`
 - `patch only`
 - `unified diff only`
 - `machine readable only`
 
-这部分逻辑是当前实现里最重要的保护措施，保证插件不会污染：
+This bypass logic is the most important safeguard so the plugin does not pollute:
 
-- 自动化脚本输入
-- 命令直出场景
-- 纯补丁输出
-- 结构化 JSON 响应
+- Automation script input
+- Command-only output scenarios
+- Pure patch output
+- Structured JSON responses
 
-## 不可破坏的硬约束
+## Non-negotiable hard constraints
 
-这些约束来自 `skills/rocky-pal/SKILL.md`，也是 README 最该关注的部分：
+From `skills/rocky-pal/SKILL.md` — the most important part of this README:
 
-1. **结果等价**：只改语气，不改技术判断和操作结论
-2. **信息完整**：不能因为风格化丢步骤、丢前置条件、丢失败分支
-3. **安全一致**：不能为了角色化降低安全与合规标准
-4. **格式优先**：严格格式任务优先保证格式纯净
+1. **Equivalent outcomes**: tone only; do not change technical judgments or operational conclusions
+2. **Complete information**: do not drop steps, preconditions, or failure branches for style
+3. **Consistent safety**: do not lower safety or compliance standards for roleplay
+4. **Format first**: strict-format tasks must stay format-pure
 
-一句话总结：**Rocky-Pal 是包装层，不是逻辑层。**
+In short: **Rocky-Pal is a presentation layer, not a logic layer.**
 
-## 目录结构
+## Directory layout
 
 ```text
 plugins/persona/rocky-pal/
@@ -134,132 +134,132 @@ plugins/persona/rocky-pal/
 └── trigger_eval_set.json
 ```
 
-## 关键文件说明
+## Key files
 
 ### `hooks/user_prompt_submit.py`
 
-主要职责：
+Main responsibilities:
 
-- 规范化用户输入
-- 用正则匹配关闭条件和机器格式条件
-- 读取技能文件并压缩为注入上下文
-- 输出 Claude Code hook 需要的 JSON 结构
+- Normalize user input
+- Match disable and machine-format conditions with regex
+- Read and compress the skill file into injected context
+- Emit the JSON structure Claude Code hooks expect
 
-实现特点：
+Implementation notes:
 
-- 支持中英文关闭/绕过短语
-- `systemMessage` 带随机性，减少每次注入完全一致
-- 依赖 `CLAUDE_PLUGIN_ROOT`，未提供时回退到脚本相对路径推导
+- Supports Chinese and English disable/bypass phrases
+- Random `systemMessage` to avoid identical injection every time
+- Uses `CLAUDE_PLUGIN_ROOT`; falls back to path relative to the script when unset
 
 ### `skills/rocky-pal/SKILL.md`
 
-这是 Rocky 角色语气的规则源文件，当前内容包括：
+Rule source for Rocky tone. Currently includes:
 
-- 触发边界
-- 结果保持规则
-- 语气压缩方式
-- 词汇映射
-- 角色背景
-- 紧急场景下的临时降噪策略
+- Trigger boundaries
+- Outcome preservation rules
+- Tone compression patterns
+- Vocabulary mapping
+- Character background
+- Temporary noise reduction in urgent scenarios
 
-如果要调风格，优先改这里，不要先改 Python 脚本。
+To tune style, edit here first — not the Python hook script.
 
 ### `trigger_eval_set.json`
 
-这是一组触发评估样本，已经覆盖两类核心判断：
+Trigger evaluation samples covering:
 
-- 应触发
-- 不应触发
+- Should trigger
+- Should not trigger
 
-适合在修改正则规则后做回归检查，确认：
+Use after regex changes to confirm:
 
-- 自然语言问题仍然触发
-- 纯 JSON / 纯命令 / 纯补丁场景仍然不会被污染
+- Natural-language questions still trigger
+- Pure JSON / command / patch scenarios stay unpolluted
 
 ### `scripts/bump_version.py`
 
-仓库里已经有版本提升脚本，用于：
+Version bump script that:
 
-- 计算新版本号
-- 汇总 changelog
-- 同步插件元数据
-- 可选自动提交
+- Computes the next version
+- Summarizes changelog
+- Syncs plugin metadata
+- Optionally commits automatically
 
-不过这个脚本当前假定存在带版本字段的插件元数据文件；使用前先确认 `.claude-plugin` 下的发布元数据结构已经和脚本保持一致。
+It currently assumes plugin metadata with version fields exists; confirm `.claude-plugin` release metadata matches the script before use.
 
-## 适用场景
+## When to use
 
-推荐启用 Rocky-Pal 的场景：
+Good fits for Rocky-Pal:
 
-- 日常问答
-- 调试说明
-- 需求总结
-- 翻译
-- 带解释的代码协作
-- 面向人的自然语言交互
+- Everyday Q&A
+- Debug explanations
+- Requirement summaries
+- Translation
+- Code collaboration with explanations
+- Human-facing natural-language interaction
 
-不应干扰的场景：
+Should not interfere with:
 
-- 纯 JSON 输出
-- 单行命令直出
-- 纯 diff / patch
-- 任何要求零额外文本的机器消费链路
+- Pure JSON output
+- Single-line command-only output
+- Pure diff / patch
+- Any machine-consumed pipeline that requires zero extra text
 
-## 调整风格时的建议
+## Tuning style
 
-### 改语气，不改边界
+### Change tone, not boundaries
 
-优先修改：
+Prefer editing:
 
 - `skills/rocky-pal/SKILL.md`
 
-谨慎修改：
+Edit carefully:
 
-- `hooks/user_prompt_submit.py` 里的正则绕过规则
+- Regex bypass rules in `hooks/user_prompt_submit.py`
 
-原因很直接：
+Reason:
 
-- 技能文件负责“怎么说”
-- hook 脚本负责“什么时候说”
+- Skill file controls *how* to speak
+- Hook script controls *when* to speak
 
-如果把这两层混在一起，后面很容易把纯格式输出污染掉。
+Mixing the two layers makes it easy to pollute pure-format output later.
 
-### 新增绕过规则时
+### When adding bypass rules
 
-每次新增正则，都建议同步补充 `trigger_eval_set.json`，至少覆盖：
+For each new regex, add cases to `trigger_eval_set.json`:
 
-- 一个应跳过的正例
-- 一个不该被误伤的反例
+- One positive case that should skip
+- One negative case that must not be skipped by mistake
 
-## 手动验证建议
+## Manual verification
 
-修改后至少检查这几类输入：
+After changes, test at least:
 
-### 应触发
+### Should trigger
 
-- `你是谁？`
-- `帮我解释这个报错`
-- `总结一下这个需求`
-- `翻译成中文`
+- `你是谁？` (Who are you?)
+- `帮我解释这个报错` (Explain this error)
+- `总结一下这个需求` (Summarize this requirement)
+- `翻译成中文` (Translate to Chinese)
 
-### 不应触发
+### Should not trigger
 
-- `仅输出 JSON，不要任何额外文本`
-- `返回一条 shell 命令，除了命令本身不要任何文字`
-- `给我一个纯补丁，不能有解释`
-- `关闭洛基风格，后面都用普通语气回答`
+- `仅输出 JSON，不要任何额外文本` (JSON only, no extra text)
+- `返回一条 shell 命令，除了命令本身不要任何文字` (One shell command only, no other text)
+- `给我一个纯补丁，不能有解释` (Pure patch only, no explanation)
+- `关闭洛基风格，后面都用普通语气回答` (Disable Rocky style; use neutral tone from now on)
 
-## 安装与使用
+## Installation and usage
 
-本插件当前目录已经包含完整实现文件。
+This directory already contains the full implementation.
 
-如果要在 Claude Code 插件体系中使用，至少需要确保：
+To use it in the Claude Code plugin system, ensure:
 
-- 插件根目录可被 Claude Code 识别
-- `hooks/hooks.json` 被正确加载
-- `CLAUDE_PLUGIN_ROOT` 指向当前插件目录，或允许脚本使用相对路径回退
-- 运行环境可执行 `python3`
+- The plugin root is recognized by Claude Code
+- `hooks/hooks.json` is loaded
+- `CLAUDE_PLUGIN_ROOT` points at this plugin directory, or the script can fall back to a relative path
+- `python3` is available in the runtime environment
 
-## 作者
+## Author
 
 Curtis Liong (<lkangd@gmail.com>)
