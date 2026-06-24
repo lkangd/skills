@@ -1,0 +1,8 @@
+{
+  "name": "simplify-permissions",
+  "description": "Audit and simplify Claude Code permissions.allow rules with conservative dry-run analysis, exact add/remove proposals, and explicit confirmation before writing settings changes.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}

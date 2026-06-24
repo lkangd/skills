@@ -89,6 +89,17 @@
       ]
     },
     {
+      "name": "simplify-permissions",
+      "source": "./plugins/engineering/simplify-permissions",
+      "description": "Audit and simplify Claude Code permissions.allow rules with conservative dry-run analysis, exact add/remove proposals, and explicit confirmation before writing settings changes.",
+      "category": "engineering",
+      "tags": [
+        "permissions",
+        "simplify",
+        "permissions.allow"
+      ]
+    },
+    {
       "name": "mail-cli",
       "source": "./plugins/chore/mail-cli",
       "description": "Email workflows via CLI backends, starting with the himalaya CLI for reading, searching, summarizing, composing, replying, forwarding, and managing mail across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",
