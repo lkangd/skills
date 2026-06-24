@@ -38,11 +38,15 @@ That workspace contains old/new skill comparison outputs, `grading.json` files, 
 
 ## Evaluation summary
 
-The first eval iteration covered:
+The eval suite now covers:
 
 - `permission-prompt-dry-run` — dry-run cleanup report for local settings with duplicate and read-query consolidation
 - `apply-still-confirms` — `--apply` proposal that must still stop for final human confirmation
 - `shared-risk-boundaries` — conservative recommendations for team-shared settings with MCP, `rtk`, Node/Python, package-manager, and Edit risks
+- `moving-target-reload` — apply-path drift detection that pauses when the target snapshot changes before final confirmation
+- `stale-temp-and-worktree-rules` — delete-first handling for `/tmp`, `/var/folders`, and `.claude/worktrees` artifact rules
+- `malformed-rule-detection` — detection of malformed or likely invalid `Bash(...)` and `Skill(...)` entries
+- `post-merge-second-pass` — bounded post-write cleanup planning for rules that become redundant after first-pass consolidation
 
 Benchmark summary from `simplify-permissions-workspace/iteration-1/benchmark.md`:
 
