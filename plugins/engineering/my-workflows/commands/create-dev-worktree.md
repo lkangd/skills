@@ -1,7 +1,8 @@
 ---
 description: Create a dev branch worktree and VS Code workspace
 argument-hint: <branch-name>
-allowed-tools: Bash(bash:*)
+allowed-tools:
+  - Bash(bash:*)
 ---
 
 ## Goal
