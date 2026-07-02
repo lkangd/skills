@@ -100,6 +100,17 @@
       ]
     },
     {
+      "name": "my-workflows",
+      "source": "./plugins/engineering/my-workflows",
+      "description": "Personal engineering workflow commands for creating development worktrees and VS Code workspace files from company dev-f/dev-bg branches.",
+      "category": "engineering",
+      "tags": [
+        "workflow",
+        "git",
+        "worktree"
+      ]
+    },
+    {
       "name": "mail-cli",
       "source": "./plugins/chore/mail-cli",
       "description": "Email workflows via CLI backends, starting with the himalaya CLI for reading, searching, summarizing, composing, replying, forwarding, and managing mail across IMAP/Maildir accounts, with a strict confirm-before-send workflow.",

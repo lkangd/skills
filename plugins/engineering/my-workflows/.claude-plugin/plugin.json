@@ -1,0 +1,8 @@
+{
+  "name": "my-workflows",
+  "description": "Personal engineering workflow commands for creating development worktrees and workspace files.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}

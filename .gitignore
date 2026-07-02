@@ -55,3 +55,4 @@ evals
 
 # private
 .private/
+*.draft.md
