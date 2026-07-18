@@ -31,6 +31,14 @@ process:
 - `in-session` — no external process; the current session executes the orchestrator procedure
   itself with read-only subagents.
 
+> **Tier remapping caveat**: subagent tiers resolve through the preset's
+> `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, but the gateway behind the preset must actually
+> serve those model names as distinct models — some (e.g. bigmodel's Anthropic endpoint) silently
+> route unknown or retired names to their flagship, collapsing all tiers into one. Verify with a
+> minimal `claude -p ... --agents '{"t":{"model":"haiku",...}}' --output-format json` run: the
+> `modelUsage` keys must list one entry per tier. Session transcripts are not evidence — they
+> record the gateway's echoed model name, not what was requested.
+
 ## How a round works
 
 The current session never orchestrates. It resolves the review target, launches **one**
