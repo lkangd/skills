@@ -52,6 +52,7 @@ evals
 
 # Temporary files
 .tmp/
+docs/handoffs/
 
 # private
 .private/

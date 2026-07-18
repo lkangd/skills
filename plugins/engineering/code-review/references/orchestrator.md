@@ -48,9 +48,13 @@ Keep the diff complete even if large; reviewers must see everything.
 
 ## Step 2 — Dispatch angle reviewers
 
-For each angle listed above, concretize `{{PLUGIN_ROOT}}/references/angles/<angle>.md` into
-`{{RUN_DIR}}/prompts/<angle>.md` by replacing its `{{PACKET_PATH}}` and `{{REPO_ROOT}}`
-placeholders (and `{{KNOWN_ISSUES}}` for `re-review`).
+For each angle listed above, take `{{PLUGIN_ROOT}}/references/angles/<angle>.md` and write a
+concretized copy to `{{RUN_DIR}}/prompts/<angle>.md`: fill the template's double-brace
+PACKET_PATH placeholder with the absolute path of the packet you wrote, its double-brace
+REPO_ROOT placeholder with the repo root given above, and — for `re-review` only — its
+double-brace KNOWN_ISSUES placeholder with the known-issues list given above.
+(These placeholder names are spelled without braces here on purpose, so that the launching
+session's template fill cannot clobber this instruction.)
 
 Then dispatch one subagent per angle with the prompt:
 "Read and execute the instructions in <absolute path to the angle prompt file>."
