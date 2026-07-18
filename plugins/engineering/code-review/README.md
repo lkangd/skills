@@ -47,9 +47,10 @@ orchestrator session, and acts on the consolidated result.
 1. **Orchestrate (inside the orchestrator session)**:
    - collects the full diff, changed-file list, and relevant `CLAUDE.md` excerpts into one
      packet file — reviewers read it instead of re-exploring the repo N times;
-   - dispatches one read-only reviewer **subagent** per angle, choosing the model tier by task
-     complexity (opus = complex, sonnet = moderate, haiku = simple), batched by `concurrency`
-     (`-c=N` per run);
+   - dispatches one read-only reviewer **subagent** per angle — or, when the diff exceeds
+     ~1,500 lines, several per high-risk angle, each restricted to a coherent file-group slice —
+     choosing the model tier by task complexity (opus = complex, sonnet = moderate,
+     haiku = simple), batched by `concurrency` (`-c=N` per run);
    - scores every finding 0–100 for confidence with cheap scorer subagents using the official
      code-review rubric verbatim, and **filters out everything below 80**;
    - prints one consolidated `CODE-REVIEW RESULT` report.
@@ -75,7 +76,8 @@ descendant agents:
   layers.
 - Hard caps independent of model behavior: exactly one orchestrator process per round
   (the script builds the single orchestrator prompt itself from its flags), and inside it at
-  most 4 angle reviewers plus at most 10 scorers.
+  most 6 angle reviewers (large diffs split into file-group slices count against this) plus at
+  most 10 scorers.
 - Reviewers always inspect the current working tree — never worktree isolation, which cannot
   see uncommitted changes.
 - All commands are `disable-model-invocation: true` — only the user can trigger them.

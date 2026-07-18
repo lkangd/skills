@@ -16,8 +16,9 @@ known-issues list to suppress (may be "none").
 - Never invoke any skill or slash command (including any `/code-review` variant).
 - Never create, edit, or delete files outside `RUN_DIR`. Never stage, commit, or revert.
 - Dispatch subagents ONLY of the provided custom types `reviewer-deep`, `reviewer`, and
-  `scorer`. Budget: at most 4 angle reviewers, at most 10 scorers, hard total 14. If findings
-  outnumber 10, batch several findings per scorer instead of exceeding the budget.
+  `scorer`. Budget: at most 6 angle reviewers (large-diff splits included), at most 10 scorers,
+  hard total 16. If findings outnumber 10, batch several findings per scorer instead of
+  exceeding the budget.
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
   enforce this — do not work around it.
 
@@ -52,6 +53,14 @@ with the absolute path of the packet you wrote, `{{REPO_ROOT}}` with the repo ro
 Then dispatch one subagent per angle with the prompt:
 "Read and execute the instructions in <absolute path to the angle prompt file>."
 
+**Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the packet's
+diff section exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
+`callers`) instead of dispatching them once: group the changed files into 2–3 coherent slices
+(by directory or feature, each slice ≤ ~1,200 diff lines) and dispatch that angle once per
+slice, appending to each dispatch prompt: "Restrict your review to these files: <slice file
+list>. Treat the rest of the packet as context only." Stay within the reviewer budget — merge
+slices rather than exceed it. State the split plan in one line before dispatching.
+
 **Model tier selection** — match cost to task complexity (tier aliases opus > sonnet > haiku
 resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping automatically):
 
@@ -64,8 +73,8 @@ resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping automatically):
 State your tier choice per angle in one line each before dispatching.
 
 Respect the concurrency limit: if it is N > 0, run at most N subagents at a time and wait for
-a batch before starting the next; if 0, dispatch all angles at once. Launch each angle exactly
-once — do not retry a reviewer more than once on failure.
+a batch before starting the next; if 0, dispatch everything at once. Launch each dispatch
+(angle, or angle × slice) exactly once — do not retry a reviewer more than once on failure.
 
 ## Step 3 — Score every finding
 

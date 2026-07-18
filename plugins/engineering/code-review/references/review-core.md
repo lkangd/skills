@@ -98,7 +98,8 @@ substitutions:
   (opus = complex angles, sonnet = moderate angles, haiku = scorers), matching the tier
   guidance in orchestrator.md. Aliases resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping
   automatically.
-- The orchestrator's budget caps (≤ 4 reviewers, ≤ 10 scorers, total 14) apply unchanged.
+- The orchestrator's budget caps (≤ 6 reviewers including large-diff splits, ≤ 10 scorers,
+  total 16) apply unchanged.
 - Then continue at §5 with the surviving (≥ 80) findings.
 
 ## §5 Verify findings and act

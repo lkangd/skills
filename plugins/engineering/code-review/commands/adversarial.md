@@ -55,4 +55,4 @@ collection, reviewer dispatch, and confidence scoring, and hands you a consolida
    anything.
 
 Budget invariant: exactly one orchestrator launch per round. All reviewer/scorer fan-out
-happens inside the orchestrator under its own caps (≤ 4 reviewers, ≤ 10 scorers).
+happens inside the orchestrator under its own caps (≤ 6 reviewers, ≤ 10 scorers).
