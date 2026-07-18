@@ -17,7 +17,10 @@ the defaults in the questions below, then overwrite with the answers.
 ## Questions
 
 Detect first: `command -v ccsp` (is ccsp installed?), and whether `.claude/code-review.local.md`
-exists. Then use `AskUserQuestion` (batch the questions; at most 4 per call):
+exists. Then ask ALL FOUR questions below in ONE `AskUserQuestion` call (4 questions, single
+call). Never skip a question or silently fill a default — even when the default is obviously
+right, the user must pick it explicitly; a config value the user never saw is a misconfiguration
+waiting to surface. Only values from answers (or the existing config on re-run) may be written:
 
 1. **Reviewer runner** — how review processes are launched:
    - `Bare claude (default)` → `runner: claude`. Separate headless process, same model as the
@@ -40,7 +43,7 @@ Write `.claude/code-review.local.md`:
 ```markdown
 ---
 runner: <answer>
-concurrency: <answer>
+concurrency: <answer>   # 0 = unlimited: all reviewers dispatched at once
 max_rounds: <answer>
 backlog_dir: <answer>
 ---
@@ -53,5 +56,8 @@ Configuration for the code-review plugin. Edit values above or re-run /code-revi
 - Review runs write packets under `.code-review/runs/` (repo root, deliberately outside
   `.claude/` whose tree rejects headless writes). Check `.gitignore`; if it does not cover that
   path, ask the user whether to append `.code-review/` to `.gitignore`, and do so if confirmed.
+  Migration: if `.gitignore` still contains the retired `.claude/code-review/` entry (written by
+  setup versions before the run dir moved), replace it with `.code-review/` in the same spot —
+  no need to ask.
 - Finish by showing the written config values and a one-line usage reminder:
   `/code-review <target>` and `/code-review:adversarial <target>`.

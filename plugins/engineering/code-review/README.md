@@ -45,14 +45,17 @@ The current session never orchestrates. It resolves the review target, launches 
 orchestrator session, and acts on the consolidated result.
 
 1. **Orchestrate (inside the orchestrator session)**:
-   - collects the full diff, changed-file list, and relevant `CLAUDE.md` excerpts into one
-     packet file — reviewers read it instead of re-exploring the repo N times;
+   - completes the review packet — the launcher script already wrote the target, `--stat`
+     list, and full diff into it (running git outside the session's Bash sandbox); the
+     orchestrator appends relevant `CLAUDE.md` excerpts and untracked-file content. Reviewers
+     read the packet instead of re-exploring the repo N times;
    - dispatches one read-only reviewer **subagent** per angle — or, when the diff exceeds
      ~1,500 lines, several per high-risk angle, each restricted to a coherent file-group slice —
      choosing the model tier by task complexity (opus = complex, sonnet = moderate,
      haiku = simple), batched by `concurrency` (`-c=N` per run);
    - scores every finding 0–100 for confidence with cheap scorer subagents using the official
-     code-review rubric verbatim, and **filters out everything below 80**;
+     code-review rubric verbatim, and **filters out everything below 80** (60–79 survive as
+     one-line "near-misses" for the main session to spot-check);
    - prints one consolidated `CODE-REVIEW RESULT` report.
 2. **Verify & act (back in the current session)**: the main agent re-confirms each surviving
    finding against the code. Confirmed and in scope → fixed now. Confirmed but pre-existing /

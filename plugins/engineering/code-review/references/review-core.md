@@ -67,20 +67,28 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator.sh" \
      --runner "<runner from config>" \
      --run-dir "RUN_DIR" \
-     --target "<precise description of the review target plus the exact git diff command(s) that produce it>" \
+     --target "<precise description of the review target>" \
+     --diff-args "<arguments for git diff that produce the target's diff>" \
      --angles "<this round's angle list>" \
      --concurrency <resolved concurrency> \
      [--known-issues-file "RUN_DIR/known-issues.md"]   # round 2+ only
    ```
+   `--diff-args` by target type — single commit `X`: `X^..X`; commit range `A..B`: `A^..B`;
+   staged: `--cached`; working tree: `HEAD`; files: `HEAD -- <paths>`; branch:
+   `<base>...HEAD`.
    Angle lists: `/code-review` round 1: `correctness, conventions, callers`;
    `/code-review:adversarial` round 1: those plus `design`; any round 2+: `re-review` only.
-   The script builds the orchestrator prompt itself — never read or fill
-   `references/orchestrator.md` in this session. It also enforces the `CODE_REVIEW_CHILD`
-   sentinel and injects the read-only `reviewer-deep`/`reviewer`/`scorer` subagent definitions.
-4. Read `RUN_DIR/out/orchestrator.out`. It contains a `CODE-REVIEW RESULT:` header followed by
-   zero or more finding blocks, each already confidence-scored (only ≥ 80 survive). If the
-   exit code is non-zero, read `orchestrator.err`, report the failure to the user, and stop —
-   relaunch at most once, and only if the failure was clearly environmental.
+   The script builds the orchestrator prompt AND the diff packet itself (fails fast on a bad
+   diff spec) — never read or fill `references/orchestrator.md` in this session. It also
+   enforces the `CODE_REVIEW_CHILD` sentinel and injects the read-only
+   `reviewer-deep`/`reviewer`/`scorer` subagent definitions.
+4. Read `RUN_DIR/out/orchestrator.out` and parse it **starting at the first line that begins
+   with `CODE-REVIEW RESULT:`** — silently discard anything before that marker (orchestrators
+   sometimes leak bookkeeping prose). After the marker: zero or more finding blocks, each
+   already confidence-scored (only ≥ 80 survive), optionally followed by a one-line-per-item
+   near-miss list (scored 60–79, unconfirmed). If the marker is missing or the exit code is
+   non-zero, read `orchestrator.err`, report the failure to the user, and stop — relaunch at
+   most once, and only if the failure was clearly environmental.
 
 While waiting, do nothing else — no speculative fixes, no other tasks.
 
@@ -92,6 +100,10 @@ substitutions:
 
 - The "launch parameters" that document references are the values you resolved in §1–§2;
   create `RUN_DIR` yourself as in §3 step 1.
+- No launcher pre-builds the packet in-session: write `RUN_DIR/packet.md` yourself first —
+  target description, `git diff <args> --stat` list, known issues (round 2+), and the full
+  `git diff <args>` output, using the same `--diff-args` mapping as §3 — then continue with
+  orchestrator.md Step 1's completion tasks (conventions, untracked files).
 - Dispatch angle reviewers and scorers via the `Agent` tool with
   `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
 - Choose the model per dispatch with the `model` parameter using tier aliases
@@ -116,6 +128,11 @@ confidence score is a strong signal, not a substitute for your own check. Then c
 
 Do not soften findings to avoid work, and do not "fix" things no reviewer flagged.
 
+**Near-misses** (the 60–79 one-liners, if any) are not findings. Give each a quick
+plausibility check — open the anchor location, a minute or two apiece, no deep dive. If one
+looks real, promote it: verify and classify it exactly like a finding above. Otherwise drop it
+silently; near-misses you did not promote are not "rejected" and need no rebuttal.
+
 ## §6 Loop protocol (adversarial mode only)
 
 After round N's fixes:
@@ -134,7 +151,9 @@ After round N's fixes:
 End with a single consolidated report:
 
 - Per finding: severity, confidence score, `file:line`, angle, verdict (**fixed** /
-  **backlogged** with file path / **rejected** with one-line reason).
+  **backlogged** with file path / **rejected** with one-line reason). Near-misses you
+  promoted are reported the same way (marked "promoted near-miss"); unpromoted ones get at
+  most a count.
 - Adversarial: rounds executed and why the loop stopped.
 - Paths: `RUN_DIR` and any backlog files written.
 - Remind the user that nothing was committed.

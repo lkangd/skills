@@ -22,26 +22,21 @@ known-issues list to suppress (may be "none").
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
   enforce this — do not work around it.
 
-## Step 1 — Build the review packet
+## Step 1 — Complete the review packet
 
-Write `RUN_DIR/packet.md` containing, in order:
+`RUN_DIR/packet.md` already exists — the launcher wrote the target description, the `--stat`
+list, the known-issues list (when present), and the full unified diff (also available raw as
+`RUN_DIR/raw_diff.txt`). Never rebuild any of that; the packet's diff section is authoritative.
+Sanity-check it (`wc -l`, `head`), then complete it with what requires judgment:
 
-1. **Target**: one paragraph describing the review target and the exact git commands you used.
-2. **Changed files**: the `--stat` list.
-3. **Diff**: the full unified diff:
-   - single commit `X`: `git diff X^..X`
-   - commit range `A..B`: `git diff A^..B`
-   - staged: `git diff --cached`
-   - working tree: `git diff HEAD`, plus full content of untracked files from
-     `git status --porcelain` (cap each at ~400 lines, note truncation)
-   - files: `git diff HEAD -- <paths>` plus full content for untracked ones
-   - branch: `git diff <base>...HEAD`
-4. **Project conventions**: the root `CLAUDE.md` (if any) and every `CLAUDE.md` in directories
-   the diff touches — paths and contents, trimmed to sections that could apply.
-5. **Known issues** (only if not "none"): the list verbatim, labeled "already handled — do not
-   re-report".
-
-Keep the diff complete even if large; reviewers must see everything.
+1. **Project conventions**: the root `CLAUDE.md` (if any) and every `CLAUDE.md` in directories
+   the diff touches, trimmed to sections that could apply. Write the excerpts (with a
+   `## Project conventions` heading and per-file paths) to `RUN_DIR/conventions-excerpt.md`,
+   then append with `cat RUN_DIR/conventions-excerpt.md >> RUN_DIR/packet.md`. Skip entirely
+   when no `CLAUDE.md` applies.
+2. **Untracked files** (working-tree and file-list targets only): the diff cannot contain
+   them — append the full content of untracked files from `git status --porcelain` the same
+   way (cap each at ~400 lines, note truncation).
 
 ## Step 2 — Dispatch angle reviewers
 
@@ -107,7 +102,10 @@ and the following instructions **verbatim**:
 >
 > Reply for each issue with `SCORE: <n>` plus one line of justification.
 
-**Filter out every finding with a score below 80.**
+**Filter out every finding with a score below 80.** Keep the ones scored 60–79 aside as
+**near-misses**: they appear in the final report as one-line entries only (never as full
+finding blocks), so the launching session can spot-check them. Discard scores below 60
+entirely.
 
 ## Step 4 — Final report (your entire final message)
 
@@ -118,6 +116,9 @@ If nothing survived the filter:
 ```
 CODE-REVIEW RESULT: no findings at or above confidence 80.
 (reviewed: <one-line target description>; angles: <list>; raw findings scored: <n>)
+
+Near-misses (scored 60–79, unconfirmed — spot-check optional):
+- [<score>] <one-line title> — <path>:<line>
 ```
 
 Otherwise:
@@ -131,7 +132,14 @@ CODE-REVIEW RESULT: <n> finding(s) at or above confidence 80.
 - evidence: <from the reviewer, quoted lines>
 - why: <concrete failure scenario>
 - suggestion: <smallest viable fix>
+
+Near-misses (scored 60–79, unconfirmed — spot-check optional):
+- [<score>] <one-line title> — <path>:<line>
 ```
 
-One block per surviving finding, most severe first. No other prose before or after — the
-launching session parses this output.
+One block per surviving finding, most severe first. Omit the near-miss section entirely when
+nothing scored 60–79.
+
+HARD OUTPUT RULE: your final message must START with `CODE-REVIEW RESULT:` as its very first
+characters. No preamble, headings, tables, or score recaps before it — do that bookkeeping in
+earlier turns. The launching session discards everything before the marker.

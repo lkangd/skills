@@ -2,17 +2,20 @@
 # Launch ONE headless orchestrator session for the code-review plugin.
 #
 # usage: run-orchestrator.sh --runner '<cmd prefix>' --run-dir <dir> \
-#          --target '<review target spec>' --angles '<angle list>' \
-#          [--concurrency <n>] [--known-issues-file <path>]
+#          --target '<review target spec>' --diff-args '<git diff arguments>' \
+#          --angles '<angle list>' [--concurrency <n>] [--known-issues-file <path>]
 #
-# This script owns prompt construction: it writes a small bootstrap prompt into
-# <run-dir>/orchestrator-prompt.md that points the orchestrator at the plugin's
-# orchestrator.md job description and hands over the session parameters. The launching
-# session only passes flags — it never reads or fills any template.
+# This script owns prompt AND packet-skeleton construction. It writes a small bootstrap
+# prompt into <run-dir>/orchestrator-prompt.md, and pre-builds <run-dir>/packet.md
+# (target, --stat list, known issues, full diff via `git diff <diff-args>`) plus
+# raw_diff.txt / diff-stat.txt. Running git and file redirection here avoids the headless
+# session's Bash allowlist and sandbox, which an orchestrator otherwise fights turn after
+# turn. The orchestrator only appends CLAUDE.md excerpts (and untracked-file content for
+# working-tree targets) to the packet.
 #
-# The orchestrator session owns the whole pipeline (packet build, reviewer subagents,
-# confidence scoring, consolidation). Its subagents are injected via --agents and are
-# structurally read-only with no delegation tools. stdout/stderr/exit code land in
+# The orchestrator session owns the rest of the pipeline (reviewer subagents, confidence
+# scoring, consolidation). Its subagents are injected via --agents and are structurally
+# read-only with no delegation tools. stdout/stderr/exit code land in
 # <run-dir>/out/orchestrator.out|.err|.exit.
 #
 # set -e/pipefail omitted on purpose: the orchestrator's exit code must be captured and
@@ -20,7 +23,7 @@
 set -u
 
 usage() {
-  echo "usage: run-orchestrator.sh --runner '<cmd prefix>' --run-dir <dir> --target '<spec>' --angles '<list>' [--concurrency <n>] [--known-issues-file <path>]" >&2
+  echo "usage: run-orchestrator.sh --runner '<cmd prefix>' --run-dir <dir> --target '<spec>' --diff-args '<git diff arguments>' --angles '<list>' [--concurrency <n>] [--known-issues-file <path>]" >&2
   exit 2
 }
 
@@ -33,6 +36,7 @@ fi
 RUNNER=""
 RUN_DIR=""
 TARGET=""
+DIFF_ARGS=""
 ANGLES=""
 CONCURRENCY="0"
 KNOWN_ISSUES_FILE=""
@@ -41,6 +45,7 @@ while [ $# -gt 0 ]; do
     --runner) [ $# -ge 2 ] || usage; RUNNER="$2"; shift 2 ;;
     --run-dir) [ $# -ge 2 ] || usage; RUN_DIR="$2"; shift 2 ;;
     --target) [ $# -ge 2 ] || usage; TARGET="$2"; shift 2 ;;
+    --diff-args) [ $# -ge 2 ] || usage; DIFF_ARGS="$2"; shift 2 ;;
     --angles) [ $# -ge 2 ] || usage; ANGLES="$2"; shift 2 ;;
     --concurrency) [ $# -ge 2 ] || usage; CONCURRENCY="$2"; shift 2 ;;
     --known-issues-file) [ $# -ge 2 ] || usage; KNOWN_ISSUES_FILE="$2"; shift 2 ;;
@@ -50,7 +55,7 @@ while [ $# -gt 0 ]; do
 done
 
 # Exactly one orchestrator per invocation — this is the fan-out chokepoint.
-[ -n "$RUNNER" ] && [ -n "$RUN_DIR" ] && [ -n "$TARGET" ] && [ -n "$ANGLES" ] || usage
+[ -n "$RUNNER" ] && [ -n "$RUN_DIR" ] && [ -n "$TARGET" ] && [ -n "$DIFF_ARGS" ] && [ -n "$ANGLES" ] || usage
 
 # Pre-create every dir the orchestrator writes into: session-side mkdir/Write under a
 # protected path (e.g. anything in .claude/) would be auto-denied in headless mode.
@@ -66,6 +71,42 @@ if [ -n "$KNOWN_ISSUES_FILE" ]; then
   KNOWN_ISSUES="$(cat "$KNOWN_ISSUES_FILE")"
 fi
 
+# Pre-build the packet skeleton. DIFF_ARGS is word-split on purpose: it is the argument
+# list for `git diff`, assembled by the launching session (e.g. "A^..B", "--cached",
+# "HEAD -- path1 path2"). Fail fast on a bad diff spec instead of burning an orchestrator
+# session on it.
+# shellcheck disable=SC2086
+git -C "$REPO_ROOT" diff $DIFF_ARGS --stat > "$RUN_DIR/diff-stat.txt" 2> "$RUN_DIR/out/diff.err" \
+  || { echo "git diff $DIFF_ARGS failed:" >&2; cat "$RUN_DIR/out/diff.err" >&2; exit 2; }
+# shellcheck disable=SC2086
+git -C "$REPO_ROOT" diff $DIFF_ARGS > "$RUN_DIR/raw_diff.txt" 2>> "$RUN_DIR/out/diff.err" || exit 2
+[ -s "$RUN_DIR/raw_diff.txt" ] || echo "warning: empty diff for 'git diff $DIFF_ARGS' — packet has no diff section content (untracked-only working-tree targets rely on the orchestrator to append file contents)" >&2
+
+PACKET="$RUN_DIR/packet.md"
+{
+  echo "# Review Packet"
+  echo
+  echo "## 1. Target"
+  echo
+  printf '%s\n' "$TARGET"
+  echo
+  echo "Diff produced by: \`git diff $DIFF_ARGS\`"
+  echo
+  echo "## 2. Changed files"
+  echo
+  cat "$RUN_DIR/diff-stat.txt"
+  if [ "$KNOWN_ISSUES" != "none" ]; then
+    echo
+    echo "## 3. Known issues (already handled — do not re-report)"
+    echo
+    printf '%s\n' "$KNOWN_ISSUES"
+  fi
+  echo
+  echo "## 4. Diff (full, unified)"
+  echo
+  cat "$RUN_DIR/raw_diff.txt"
+} > "$PACKET" || exit 1
+
 # Bootstrap prompt: point the orchestrator at its job description and hand over the
 # parameters. Values substituted here are inert text to the shell — a heredoc expands
 # variables once and never re-interprets their contents.
@@ -79,6 +120,8 @@ complete job description. The session parameters that document references are:
 - Repo root (REPO_ROOT): $REPO_ROOT
 - Working directory for all artifacts you create (RUN_DIR): $RUN_DIR
 - Plugin root (PLUGIN_ROOT): $PLUGIN_ROOT
+- Pre-built review packet: $RUN_DIR/packet.md — target, changed-file stat, known issues, and
+  the full diff (from \`git diff $DIFF_ARGS\`) are already inside; do not rebuild them.
 - Angles this round: $ANGLES
 - Subagent concurrency limit (0 = unlimited): $CONCURRENCY
 - Review target (审查内容):
