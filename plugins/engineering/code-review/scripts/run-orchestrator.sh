@@ -52,7 +52,9 @@ done
 # Exactly one orchestrator per invocation — this is the fan-out chokepoint.
 [ -n "$RUNNER" ] && [ -n "$RUN_DIR" ] && [ -n "$TARGET" ] && [ -n "$ANGLES" ] || usage
 
-mkdir -p "$RUN_DIR/out" || exit 1
+# Pre-create every dir the orchestrator writes into: session-side mkdir/Write under a
+# protected path (e.g. anything in .claude/) would be auto-denied in headless mode.
+mkdir -p "$RUN_DIR/out" "$RUN_DIR/prompts" || exit 1
 RUN_DIR="$(cd "$RUN_DIR" && pwd)" || exit 1
 OUTDIR="$RUN_DIR/out"
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1

@@ -58,5 +58,6 @@ docs/handoffs/
 .private/
 *.draft.md
 
-# code-review plugin run artifacts
+# code-review plugin run artifacts (old and current locations)
 .claude/code-review/
+.code-review/

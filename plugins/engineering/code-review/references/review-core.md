@@ -58,7 +58,9 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
 
 ## §3 Launch the orchestrator (external mode)
 
-1. Create `RUN_DIR=.claude/code-review/runs/<yyyymmdd-HHMMSS>/round-<N>/`.
+1. Set `RUN_DIR=.code-review/runs/<yyyymmdd-HHMMSS>/round-<N>/` (repo root, NOT under
+   `.claude/` — Claude Code's sensitive-file protection auto-denies headless writes there).
+   The launcher script creates it.
 2. Round 2+ only: write the known-issues list (§6) to `RUN_DIR/known-issues.md`.
 3. Launch, with `run_in_background: true`, then poll until it finishes:
    ```

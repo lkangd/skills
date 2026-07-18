@@ -50,8 +50,8 @@ Configuration for the code-review plugin. Edit values above or re-run /code-revi
 
 ## Housekeeping
 
-- Review runs write packets under `.claude/code-review/runs/`. Check `.gitignore`; if it does
-  not cover that path, ask the user whether to append `.claude/code-review/` to `.gitignore`,
-  and do so if confirmed.
+- Review runs write packets under `.code-review/runs/` (repo root, deliberately outside
+  `.claude/` whose tree rejects headless writes). Check `.gitignore`; if it does not cover that
+  path, ask the user whether to append `.code-review/` to `.gitignore`, and do so if confirmed.
 - Finish by showing the written config values and a one-line usage reminder:
   `/code-review <target>` and `/code-review:adversarial <target>`.

@@ -93,5 +93,7 @@ backlog_dir: docs/code-review-backlog
 ---
 ```
 
-Run artifacts (packets, prompts, reviewer output) go to `.claude/code-review/runs/` — setup
-offers to gitignore it.
+Run artifacts (packets, prompts, reviewer output) go to `.code-review/runs/` — setup offers to
+gitignore it. The directory sits at the repo root on purpose: anything under `.claude/` is
+covered by Claude Code's sensitive-file protection, which auto-denies the headless
+orchestrator's writes.
