@@ -36,20 +36,23 @@ Raw arguments: `$ARGUMENTS`
 
 ## Procedure
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/review-core.md` and execute it in **loop mode**:
+Read `${CLAUDE_PLUGIN_ROOT}/references/review-core.md` and execute it in **loop mode**. You do
+not orchestrate the reviews — each round launches one orchestrator session that does the diff
+collection, reviewer dispatch, and confidence scoring, and hands you a consolidated report:
 
 1. Safety rules (§0), load config (§1) — run setup first if `.claude/code-review.local.md` is
    missing.
 2. Resolve the review target (§2).
-3. **Round 1**: build the packet (§3), prepare **four** angle prompts (§4): `correctness`,
-   `conventions`, `callers`, `design`. Dispatch per the configured runner (§5), then verify and
-   fix / backlog / reject per §6.
-4. **Rounds 2..max_rounds**: follow the loop protocol (§7) exactly — continue only while the
+3. **Round 1**: launch ONE orchestrator with angles
+   `correctness, conventions, callers, design` (§3), or execute the orchestrator procedure
+   yourself if config says `runner: in-session` (§4). Then verify the surviving (≥ 80)
+   findings and fix / backlog / reject per §5.
+4. **Rounds 2..max_rounds**: follow the loop protocol (§6) exactly — continue only while the
    previous round produced confirmed major/critical findings that you fixed; each later round
-   is one single `re-review` reviewer on a fresh cumulative packet with the known-issues list
-   inlined.
-5. Report per §8, including how many rounds ran and why the loop stopped. Do not commit
+   launches one orchestrator with angles `re-review` on the cumulative diff, with the
+   known-issues list inlined.
+5. Report per §7, including how many rounds ran and why the loop stopped. Do not commit
    anything.
 
-Budget invariant: this command dispatches at most 4 reviewers in round 1 and exactly 1 per
-later round — never more, regardless of findings volume.
+Budget invariant: exactly one orchestrator launch per round. All reviewer/scorer fan-out
+happens inside the orchestrator under its own caps (≤ 4 reviewers, ≤ 10 scorers).

@@ -33,10 +33,6 @@ exists. Then use `AskUserQuestion` (batch the questions; at most 4 per call):
 4. **Backlog directory** — where deferred findings are filed (tracked in git):
    `docs/code-review-backlog (default)` or a custom path.
 
-If the runner is `in-session`, also ask which model tier reviewers should use
-(`in_session_model`): `opus (default)`, `sonnet`, or `haiku`. Mention that tier aliases are
-resolved through `ANTHROPIC_DEFAULT_*_MODEL` env remapping when present.
-
 ## Write the config
 
 Write `.claude/code-review.local.md`:
@@ -47,7 +43,6 @@ runner: <answer>
 concurrency: <answer>
 max_rounds: <answer>
 backlog_dir: <answer>
-in_session_model: <answer or omit>
 ---
 
 Configuration for the code-review plugin. Edit values above or re-run /code-review:setup.

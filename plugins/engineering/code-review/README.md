@@ -20,43 +20,54 @@ file paths, or `branch <base>`. With no target the command asks; it never guesse
 
 ## Cross-model review (the point)
 
-The `runner` config is a command prefix used to launch each reviewer as a separate headless
+The `runner` config is a command prefix used to launch the orchestrator as a separate headless
 process:
 
 - `claude` (default) — separate process, same model. Works with zero configuration.
 - `ccsp -g <preset> claude` — via [cc-settings-preset](https://github.com/lkangd/cc-settings-preset),
-  reviewers run on whatever model the preset maps (e.g. a non-Anthropic model), while the
-  fixing session keeps its own model. Any wrapper that ends in a `claude`-compatible CLI works.
-- `in-session` — no external processes; reviewers are read-only subagents of the current
-  session. Model tier is configurable (`in_session_model`), and tier aliases resolve correctly
-  through `ANTHROPIC_DEFAULT_*_MODEL` remapping.
+  the whole review pipeline runs on whatever model the preset maps (e.g. a non-Anthropic
+  model), while the fixing session keeps its own model. Any wrapper that ends in a
+  `claude`-compatible CLI works.
+- `in-session` — no external process; the current session executes the orchestrator procedure
+  itself with read-only subagents.
 
 ## How a round works
 
-1. **Packet build**: the main agent collects the full diff, changed-file list, and relevant
-   `CLAUDE.md` excerpts into one packet file — reviewers read it instead of re-exploring the
-   repo N times.
-2. **Fan-out**: one process/subagent per angle, batched by `concurrency` (`-c=N` per run).
-3. **Verify & act**: the main agent confirms each finding against the code. Confirmed and in
-   scope → fixed now. Confirmed but pre-existing / too large → one file per issue in the
-   backlog (default `docs/code-review-backlog/`, git-tracked, with status tracking and a
-   suggested fix approach). Not confirmed → rejected with a stated reason.
-4. Nothing is ever committed by the plugin.
+The current session never orchestrates. It resolves the review target, launches **one**
+orchestrator session, and acts on the consolidated result.
+
+1. **Orchestrate (inside the orchestrator session)**:
+   - collects the full diff, changed-file list, and relevant `CLAUDE.md` excerpts into one
+     packet file — reviewers read it instead of re-exploring the repo N times;
+   - dispatches one read-only reviewer **subagent** per angle, choosing the model tier by task
+     complexity (opus = complex, sonnet = moderate, haiku = simple), batched by `concurrency`
+     (`-c=N` per run);
+   - scores every finding 0–100 for confidence with cheap scorer subagents using the official
+     code-review rubric verbatim, and **filters out everything below 80**;
+   - prints one consolidated `CODE-REVIEW RESULT` report.
+2. **Verify & act (back in the current session)**: the main agent re-confirms each surviving
+   finding against the code. Confirmed and in scope → fixed now. Confirmed but pre-existing /
+   too large → one file per issue in the backlog (default `docs/code-review-backlog/`,
+   git-tracked, with status tracking and a suggested fix approach). Not confirmed → rejected
+   with a stated reason.
+3. Nothing is ever committed by the plugin.
 
 ## Runaway protection
 
 Built in response to a real incident where a re-entrant review skill recursively spawned 242
 descendant agents:
 
-- Reviewers are structurally unable to fan out: headless processes run with a read-only
-  `--allowedTools` set and `Task`/`Skill` disallowed; the in-session agent has no delegation
-  tools and runs with `permissionMode: plan` (note: its Bash is constrained by prompt rules
-  plus the session permission system, not by a per-command allowlist — the external runner is
-  the stricter of the two modes).
-- `CODE_REVIEW_CHILD=1` sentinel: both commands refuse to run when it is set, and the runner
-  script refuses to start when it is already set — recursion is blocked at two layers.
-- Hard caps independent of model behavior: max 8 prompts per script call (script-enforced),
-  max 4 reviewers in round 1 and exactly 1 per later round (command-enforced).
+- Reviewers and scorers are structurally unable to fan out: they are subagents injected into
+  the orchestrator via `--agents` with tool allowlists containing no `Task`, no `Skill`, and no
+  write tools; the orchestrator itself runs with `Skill` disallowed and inspection-grade Bash
+  only. The in-session agent likewise has no delegation tools and runs with
+  `permissionMode: plan`.
+- `CODE_REVIEW_CHILD=1` sentinel: both commands refuse to run when it is set, and the
+  orchestrator script refuses to start when it is already set — recursion is blocked at two
+  layers.
+- Hard caps independent of model behavior: exactly one orchestrator process per round
+  (script-enforced: one prompt file only), and inside it at most 4 angle reviewers plus at
+  most 10 scorers.
 - Reviewers always inspect the current working tree — never worktree isolation, which cannot
   see uncommitted changes.
 - All commands are `disable-model-invocation: true` — only the user can trigger them.
@@ -71,7 +82,6 @@ runner: claude              # or "ccsp -g <preset> claude", or "in-session"
 concurrency: 0              # 0 = unlimited; -c=N overrides per run
 max_rounds: 3               # adversarial loop cap; --max-rounds=N overrides
 backlog_dir: docs/code-review-backlog
-in_session_model: opus      # tier for in-session reviewers
 ---
 ```
 

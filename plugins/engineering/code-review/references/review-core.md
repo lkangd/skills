@@ -7,37 +7,46 @@ Throughout this document, **review target** (审查内容) means whatever the us
 one or more commits, staged changes, the working tree, specific files, or a branch diff.
 Never assume it is a pull request.
 
-## 0. Safety rules (non-negotiable)
+## Division of labor
+
+You (the current session) do NOT orchestrate the review. The entire pipeline — diff
+collection, reviewer dispatch, confidence scoring, consolidation — runs inside one dedicated
+orchestrator session launched through the configured runner. Your job is only:
+
+1. resolve the review target,
+2. launch the orchestrator and wait,
+3. act on its consolidated report (verify → fix / backlog / reject),
+4. report to the user.
+
+Exception: when config sets `runner: in-session`, there is no external process — you execute
+the orchestrator procedure yourself (§4).
+
+## §0 Safety rules (non-negotiable)
 
 - If the `CODE_REVIEW_CHILD` sentinel printed by the command is non-empty, you are inside a
-  reviewer process. Refuse and stop.
-- Reviewers are read-only. Never give a reviewer write tools, and never let one delegate:
-  no `Task`/`Agent`, no `Skill`, no nested `/code-review`.
-- Never use worktree isolation for reviewers. Uncommitted changes are only visible in the
-  current working tree.
-- Hard budget per invocation: at most 4 reviewer processes/subagents in round 1, and exactly 1
-  in each later round. If anything would exceed this, stop and report instead.
+  reviewer/orchestrator process. Refuse and stop.
+- Launch at most ONE orchestrator process per round, via the bundled script only. Never invoke
+  the runner ad hoc, and never call the script twice in a round.
+- Reviewers and scorers are read-only subagents of the orchestrator; never spawn review
+  subagents from the current session in external mode.
+- Never use worktree isolation anywhere in this workflow.
 - Never commit, push, stage, or revert anything unless the user explicitly asks.
 
-## 1. Load configuration
+## §1 Load configuration
 
 Read `.claude/code-review.local.md` in the project root. Its YAML frontmatter:
 
 | field | default | meaning |
 |---|---|---|
-| `runner` | `claude` | Command prefix that launches a reviewer process, e.g. `ccsp -g gpt claude`. Special value `in-session` uses subagents instead of external processes. |
-| `concurrency` | `0` | Max reviewers running at once. `0` = no limit. |
+| `runner` | `claude` | Command prefix that launches the orchestrator session, e.g. `ccsp -g gpt claude`. Special value `in-session`: no external process (§4). |
+| `concurrency` | `0` | Max reviewer subagents at once inside the orchestrator. `0` = no limit. |
 | `max_rounds` | `3` | Adversarial loop cap. |
 | `backlog_dir` | `docs/code-review-backlog` | Where deferred findings are filed. |
-| `in_session_model` | `opus` | Model tier for in-session reviewer subagents. |
 
-If the file does not exist, run the setup flow from `commands/setup.md` first (ask the
-questions, write the file), then continue.
+If the file does not exist, run the setup flow from `commands/setup.md` first, then continue.
+Flags override config for this run only: `-c=N` → concurrency, `--max-rounds=N` (adversarial).
 
-Command-line flags override config for this run only: `-c=N` overrides `concurrency`,
-`--max-rounds=N` overrides `max_rounds` (adversarial only).
-
-## 2. Resolve the review target
+## §2 Resolve the review target
 
 The target must be explicit. Parse it from the arguments (a commit sha or range, `staged`,
 `working-tree`, file paths, `branch <base>`, or a natural-language description that maps to one
@@ -45,117 +54,86 @@ of these).
 
 If no target was given, do NOT pick one silently. Gather candidates cheaply
 (`git log --oneline -3`, `git status --short`, `git diff --cached --stat | tail -1`) and use
-`AskUserQuestion` to let the user choose: latest commit / working tree / staged / something else.
+`AskUserQuestion` to let the user choose.
 
-## 3. Build the review packet
+## §3 Launch the orchestrator (external mode)
 
-One packet per round, built by you (the main agent) so reviewers never re-explore the repo.
+1. Create `RUN_DIR=.claude/code-review/runs/<yyyymmdd-HHMMSS>/round-<N>/`.
+2. Read `${CLAUDE_PLUGIN_ROOT}/references/orchestrator.md` and write a concretized copy to
+   `RUN_DIR/orchestrator-prompt.md`, filling every placeholder:
+   - `{{REPO_ROOT}}` — absolute repo root; `{{RUN_DIR}}` — absolute run dir;
+     `{{PLUGIN_ROOT}}` — absolute plugin root
+   - `{{TARGET_SPEC}}` — precise description of the review target plus the exact git diff
+     command(s) that produce it
+   - `{{ANGLES}}` — this round's angle list:
+     `/code-review` round 1: `correctness, conventions, callers`;
+     `/code-review:adversarial` round 1: those plus `design`; any round 2+: `re-review` only
+   - `{{CONCURRENCY}}` — resolved concurrency value
+   - `{{KNOWN_ISSUES}}` — `none` in round 1; in later rounds the one-line-per-issue list (§6)
+3. Launch, with `run_in_background: true`, then poll until it finishes:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator.sh" \
+     --runner "<runner from config>" \
+     --outdir "RUN_DIR/out" \
+     RUN_DIR/orchestrator-prompt.md
+   ```
+   The script enforces the `CODE_REVIEW_CHILD` sentinel, accepts exactly one prompt file, and
+   injects the read-only `reviewer-deep`/`reviewer`/`scorer` subagent definitions.
+4. Read `RUN_DIR/out/orchestrator.out`. It contains a `CODE-REVIEW RESULT:` header followed by
+   zero or more finding blocks, each already confidence-scored (only ≥ 80 survive). If the
+   exit code is non-zero, read `orchestrator.err`, report the failure to the user, and stop —
+   relaunch at most once, and only if the failure was clearly environmental.
 
-Create `RUN_DIR=.claude/code-review/runs/<yyyymmdd-HHMMSS>/round-<N>/` with subdirs `prompts/`
-and `out/`. Write `RUN_DIR/packet.md` containing, in order:
+While waiting, do nothing else — no speculative fixes, no other tasks.
 
-1. **Target**: one paragraph describing the review target and the exact git commands used below.
-2. **Changed files**: the `--stat` list.
-3. **Diff**: the full unified diff of the target:
-   - single commit `X`: `git diff X^..X`
-   - commit range `A..B`: `git diff A^..B`
-   - staged: `git diff --cached`
-   - working tree: `git diff HEAD`, plus the full content of untracked files from
-     `git status --porcelain` (cap each untracked file at ~400 lines, note truncation)
-   - files: `git diff HEAD -- <paths>` plus full content for untracked ones
-   - branch: `git diff <base>...HEAD`
-4. **Project conventions**: the root `CLAUDE.md` (if any) and every `CLAUDE.md` in directories
-   the diff touches. Include file paths and contents, trimmed to sections that could apply.
-5. **Round context** (round 2+ only): see the loop protocol below.
+## §4 In-session mode (`runner: in-session`)
 
-If the diff exceeds ~5000 lines, keep it complete anyway and say so in the Target section —
-reviewers must see everything; do not summarize code.
+No external process: you act as the orchestrator yourself. Execute the procedure in
+`${CLAUDE_PLUGIN_ROOT}/references/orchestrator.md` directly in this session, with these
+substitutions:
 
-## 4. Prepare angle prompts
+- Dispatch angle reviewers and scorers via the `Agent` tool with
+  `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
+- Choose the model per dispatch with the `model` parameter using tier aliases
+  (opus = complex angles, sonnet = moderate angles, haiku = scorers), matching the tier
+  guidance in orchestrator.md. Aliases resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping
+  automatically.
+- The orchestrator's budget caps (≤ 4 reviewers, ≤ 10 scorers, total 14) apply unchanged.
+- Then continue at §5 with the surviving (≥ 80) findings.
 
-Angle templates live in `${CLAUDE_PLUGIN_ROOT}/references/angles/`:
+## §5 Verify findings and act
 
-| template | angle | used in |
-|---|---|---|
-| `correctness.md` | logic errors and bugs in the diff | both modes, round 1 |
-| `conventions.md` | project-convention violations | both modes, round 1 |
-| `callers.md` | caller/interface impact of the change | both modes, round 1 |
-| `design.md` | design and assumption challenges | adversarial only, round 1 |
-| `re-review.md` | fix verification + regression scan | rounds 2+ (single reviewer) |
-
-For each template needed this round, produce `RUN_DIR/prompts/<angle>.md` by replacing the
-placeholders `{{PACKET_PATH}}` (absolute path to `packet.md`), `{{REPO_ROOT}}` (absolute repo
-root), and — for `re-review.md` only — `{{KNOWN_ISSUES}}` (see loop protocol). `sed` with `|`
-delimiters works; for `{{KNOWN_ISSUES}}` it is easier to write the prompt file yourself.
-
-## 5. Dispatch reviewers
-
-### External runner (default)
-
-Run the bundled script in the background and poll its output until it finishes:
-
-```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-reviewers.sh" \
-  --runner "<runner from config>" \
-  --concurrency <N> \
-  --outdir "RUN_DIR/out" \
-  RUN_DIR/prompts/<angle>.md ...
-```
-
-Use `run_in_background: true` for this Bash call (reviews can take several minutes), then poll.
-The script sets the `CODE_REVIEW_CHILD=1` sentinel, restricts each reviewer to read-only tools,
-refuses more than 8 prompts, and writes `out/<angle>.out|.err|.exit` per reviewer. Call it at
-most once per round. If any `.exit` is non-zero, read the `.err`, report the failure, and
-continue with the reviewers that succeeded — do not relaunch the failed one more than once.
-
-### In-session (`runner: in-session`)
-
-1. Determine the model tier mapping: `printenv | grep -E '^ANTHROPIC_' | sort`. The tier
-   aliases opus > sonnet > haiku may be remapped to third-party models via
-   `ANTHROPIC_DEFAULT_OPUS_MODEL` etc. Always pass tier aliases (`opus`/`sonnet`/`haiku`) as the
-   `model` parameter — the harness resolves them. Use the tier from `in_session_model`.
-2. Dispatch one `Agent` call per angle prompt file with `subagent_type: "code-review:reviewer"`,
-   `run_in_background: false`, `model: <tier>`, and a prompt of: "Read and execute the
-   instructions in <absolute path to the angle prompt file>."
-3. Respect `concurrency`: if `N > 0`, launch at most `N` agents per message and wait for each
-   batch to finish before the next. If `0`, launch all in one message.
-4. Never launch more agents than there are angle prompts this round.
-
-## 6. Verify findings and act
-
-Collect every finding from the reviewer outputs. For each one, verify it yourself against the
-actual code (read the file, check the claim). Then classify:
+For each finding in the consolidated report, verify it yourself against the actual code — the
+confidence score is a strong signal, not a substitute for your own check. Then classify:
 
 - **Confirmed, in scope** → fix it now with the smallest change that resolves it.
 - **Confirmed, but out of scope** (pre-existing, or the fix is large/risky relative to the
-  review target) → file it in the backlog: create one file per issue in `backlog_dir` following
-  `${CLAUDE_PLUGIN_ROOT}/references/backlog-template.md`. Before creating, glob the backlog dir
-  for an existing file about the same issue; update it instead of duplicating.
+  review target) → file it in the backlog: one file per issue in `backlog_dir` following
+  `${CLAUDE_PLUGIN_ROOT}/references/backlog-template.md`. Glob the backlog dir first and update
+  an existing entry instead of duplicating.
 - **Not confirmed** → record why the finding is wrong (you will report this; do not fix).
 
-Do not soften reviewer findings to avoid work, and do not "fix" things no reviewer flagged.
+Do not soften findings to avoid work, and do not "fix" things no reviewer flagged.
 
-## 7. Loop protocol (adversarial mode only)
+## §6 Loop protocol (adversarial mode only)
 
 After round N's fixes:
 
-1. Decide whether to continue: continue only if round N produced at least one **confirmed**
-   finding of severity **major or critical** that you fixed. Stop when a round yields none, or
-   when `max_rounds` is reached.
-2. Round N+1 uses exactly one reviewer with the `re-review.md` template on a **new packet**
-   whose diff is the cumulative view: the original review target's diff plus all uncommitted
-   fix changes (`git diff HEAD` on top of the original target diff; describe both in the Target
-   section).
-3. `{{KNOWN_ISSUES}}` = one line per already-handled issue, formatted
-   `- [fixed|backlogged|rejected] <file>: <one-line summary>`. Include everything from all
-   previous rounds. Do not paste backlog file contents — one line each, nothing more.
+1. Continue only if round N produced at least one **confirmed major/critical** finding that you
+   fixed. Stop when a round yields none, or when `max_rounds` is reached.
+2. Round N+1 launches the orchestrator again (§3) with `{{ANGLES}}` = `re-review` and a
+   `{{TARGET_SPEC}}` describing the cumulative view: the original review target's diff plus all
+   uncommitted fix changes.
+3. `{{KNOWN_ISSUES}}` = one line per already-handled issue from all previous rounds:
+   `- [fixed|backlogged|rejected] <file>: <one-line summary>`. One line each — never paste
+   backlog file contents.
 
-## 8. Report
+## §7 Report
 
 End with a single consolidated report:
 
-- Per finding: severity, `file:line`, angle that found it, verdict (**fixed** / **backlogged**
-  with file path / **rejected** with one-line reason).
+- Per finding: severity, confidence score, `file:line`, angle, verdict (**fixed** /
+  **backlogged** with file path / **rejected** with one-line reason).
 - Adversarial: rounds executed and why the loop stopped.
 - Paths: `RUN_DIR` and any backlog files written.
 - Remind the user that nothing was committed.
