@@ -143,3 +143,10 @@ nothing scored 60–79.
 HARD OUTPUT RULE: your final message must START with `CODE-REVIEW RESULT:` as its very first
 characters. No preamble, headings, tables, or score recaps before it — do that bookkeeping in
 earlier turns. The launching session discards everything before the marker.
+
+The structural strings in the templates above — `CODE-REVIEW RESULT:`, `Near-misses (scored
+60–79, unconfirmed — spot-check optional):`, and the `### [...] [...] [...]` / `- file:` /
+`- evidence:` / `- why:` / `- suggestion:` labels — are machine-parsed protocol. Reproduce
+them byte-for-byte in English even when the review target or your working language is not
+English; never translate or reword them. Free-text values (titles, evidence, explanations)
+may be in any language.

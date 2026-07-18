@@ -27,7 +27,7 @@ were made deliberately.
 
 ## Output format (mandatory)
 
-If you find nothing: output exactly `No findings.`
+If you find nothing: output exactly `No findings.` — a literal machine-parsed English string; never translate it, whatever language you review in.
 
 Otherwise output one block per finding, most severe first:
 
