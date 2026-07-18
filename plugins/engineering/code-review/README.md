@@ -74,8 +74,8 @@ descendant agents:
   orchestrator script refuses to start when it is already set — recursion is blocked at two
   layers.
 - Hard caps independent of model behavior: exactly one orchestrator process per round
-  (script-enforced: one prompt file only), and inside it at most 4 angle reviewers plus at
-  most 10 scorers.
+  (the script builds the single orchestrator prompt itself from its flags), and inside it at
+  most 4 angle reviewers plus at most 10 scorers.
 - Reviewers always inspect the current working tree — never worktree isolation, which cannot
   see uncommitted changes.
 - All commands are `disable-model-invocation: true` — only the user can trigger them.

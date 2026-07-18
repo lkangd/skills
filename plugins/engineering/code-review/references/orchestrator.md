@@ -5,20 +5,16 @@ entire review pipeline: collect the diff, dispatch reviewer subagents, score the
 and print one consolidated report. The session that launched you will act on your report —
 you never fix anything yourself.
 
-Placeholders below are filled in by the launching session before you see this file.
-
-- Repo root: `{{REPO_ROOT}}`
-- Working directory for all artifacts you create: `{{RUN_DIR}}`
-- Plugin root (angle templates): `{{PLUGIN_ROOT}}`
-- Review target (审查内容): {{TARGET_SPEC}}
-- Angles this round: {{ANGLES}}
-- Subagent concurrency limit (0 = unlimited): {{CONCURRENCY}}
-- Known issues to suppress (may be "none"): {{KNOWN_ISSUES}}
+Your launch prompt supplies the session parameters this document refers to by name:
+`REPO_ROOT` (repo root), `RUN_DIR` (working directory for all artifacts you create),
+`PLUGIN_ROOT` (plugin root, holds the angle templates), the review target (审查内容), the
+angle list for this round, the subagent concurrency limit (0 = unlimited), and the
+known-issues list to suppress (may be "none").
 
 ## Hard rules
 
 - Never invoke any skill or slash command (including any `/code-review` variant).
-- Never create, edit, or delete files outside `{{RUN_DIR}}`. Never stage, commit, or revert.
+- Never create, edit, or delete files outside `RUN_DIR`. Never stage, commit, or revert.
 - Dispatch subagents ONLY of the provided custom types `reviewer-deep`, `reviewer`, and
   `scorer`. Budget: at most 4 angle reviewers, at most 10 scorers, hard total 14. If findings
   outnumber 10, batch several findings per scorer instead of exceeding the budget.
@@ -27,7 +23,7 @@ Placeholders below are filled in by the launching session before you see this fi
 
 ## Step 1 — Build the review packet
 
-Write `{{RUN_DIR}}/packet.md` containing, in order:
+Write `RUN_DIR/packet.md` containing, in order:
 
 1. **Target**: one paragraph describing the review target and the exact git commands you used.
 2. **Changed files**: the `--stat` list.
@@ -48,13 +44,10 @@ Keep the diff complete even if large; reviewers must see everything.
 
 ## Step 2 — Dispatch angle reviewers
 
-For each angle listed above, take `{{PLUGIN_ROOT}}/references/angles/<angle>.md` and write a
-concretized copy to `{{RUN_DIR}}/prompts/<angle>.md`: fill the template's double-brace
-PACKET_PATH placeholder with the absolute path of the packet you wrote, its double-brace
-REPO_ROOT placeholder with the repo root given above, and — for `re-review` only — its
-double-brace KNOWN_ISSUES placeholder with the known-issues list given above.
-(These placeholder names are spelled without braces here on purpose, so that the launching
-session's template fill cannot clobber this instruction.)
+For each angle in your parameters, take `PLUGIN_ROOT/references/angles/<angle>.md` and write a
+concretized copy to `RUN_DIR/prompts/<angle>.md`, filling every placeholder: `{{PACKET_PATH}}`
+with the absolute path of the packet you wrote, `{{REPO_ROOT}}` with the repo root, and — for
+`re-review` only — `{{KNOWN_ISSUES}}` with the known-issues list from your parameters.
 
 Then dispatch one subagent per angle with the prompt:
 "Read and execute the instructions in <absolute path to the angle prompt file>."

@@ -59,26 +59,22 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
 ## §3 Launch the orchestrator (external mode)
 
 1. Create `RUN_DIR=.claude/code-review/runs/<yyyymmdd-HHMMSS>/round-<N>/`.
-2. Read `${CLAUDE_PLUGIN_ROOT}/references/orchestrator.md` and write a concretized copy to
-   `RUN_DIR/orchestrator-prompt.md`, filling every placeholder:
-   - `{{REPO_ROOT}}` — absolute repo root; `{{RUN_DIR}}` — absolute run dir;
-     `{{PLUGIN_ROOT}}` — absolute plugin root
-   - `{{TARGET_SPEC}}` — precise description of the review target plus the exact git diff
-     command(s) that produce it
-   - `{{ANGLES}}` — this round's angle list:
-     `/code-review` round 1: `correctness, conventions, callers`;
-     `/code-review:adversarial` round 1: those plus `design`; any round 2+: `re-review` only
-   - `{{CONCURRENCY}}` — resolved concurrency value
-   - `{{KNOWN_ISSUES}}` — `none` in round 1; in later rounds the one-line-per-issue list (§6)
+2. Round 2+ only: write the known-issues list (§6) to `RUN_DIR/known-issues.md`.
 3. Launch, with `run_in_background: true`, then poll until it finishes:
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator.sh" \
      --runner "<runner from config>" \
-     --outdir "RUN_DIR/out" \
-     RUN_DIR/orchestrator-prompt.md
+     --run-dir "RUN_DIR" \
+     --target "<precise description of the review target plus the exact git diff command(s) that produce it>" \
+     --angles "<this round's angle list>" \
+     --concurrency <resolved concurrency> \
+     [--known-issues-file "RUN_DIR/known-issues.md"]   # round 2+ only
    ```
-   The script enforces the `CODE_REVIEW_CHILD` sentinel, accepts exactly one prompt file, and
-   injects the read-only `reviewer-deep`/`reviewer`/`scorer` subagent definitions.
+   Angle lists: `/code-review` round 1: `correctness, conventions, callers`;
+   `/code-review:adversarial` round 1: those plus `design`; any round 2+: `re-review` only.
+   The script builds the orchestrator prompt itself — never read or fill
+   `references/orchestrator.md` in this session. It also enforces the `CODE_REVIEW_CHILD`
+   sentinel and injects the read-only `reviewer-deep`/`reviewer`/`scorer` subagent definitions.
 4. Read `RUN_DIR/out/orchestrator.out`. It contains a `CODE-REVIEW RESULT:` header followed by
    zero or more finding blocks, each already confidence-scored (only ≥ 80 survive). If the
    exit code is non-zero, read `orchestrator.err`, report the failure to the user, and stop —
@@ -92,6 +88,8 @@ No external process: you act as the orchestrator yourself. Execute the procedure
 `${CLAUDE_PLUGIN_ROOT}/references/orchestrator.md` directly in this session, with these
 substitutions:
 
+- The "launch parameters" that document references are the values you resolved in §1–§2;
+  create `RUN_DIR` yourself as in §3 step 1.
 - Dispatch angle reviewers and scorers via the `Agent` tool with
   `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
 - Choose the model per dispatch with the `model` parameter using tier aliases
@@ -121,12 +119,12 @@ After round N's fixes:
 
 1. Continue only if round N produced at least one **confirmed major/critical** finding that you
    fixed. Stop when a round yields none, or when `max_rounds` is reached.
-2. Round N+1 launches the orchestrator again (§3) with `{{ANGLES}}` = `re-review` and a
-   `{{TARGET_SPEC}}` describing the cumulative view: the original review target's diff plus all
+2. Round N+1 launches the orchestrator again (§3) with `--angles "re-review"` and a
+   `--target` describing the cumulative view: the original review target's diff plus all
    uncommitted fix changes.
-3. `{{KNOWN_ISSUES}}` = one line per already-handled issue from all previous rounds:
-   `- [fixed|backlogged|rejected] <file>: <one-line summary>`. One line each — never paste
-   backlog file contents.
+3. `RUN_DIR/known-issues.md` (passed via `--known-issues-file`) = one line per already-handled
+   issue from all previous rounds: `- [fixed|backlogged|rejected] <file>: <one-line summary>`.
+   One line each — never paste backlog file contents.
 
 ## §7 Report
 
