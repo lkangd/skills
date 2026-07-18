@@ -100,6 +100,18 @@
       ]
     },
     {
+      "name": "code-review",
+      "source": "./plugins/engineering/code-review",
+      "description": "Review-verify-fix workflow in one command: parallel read-only reviewers (cross-model via a configurable runner), main-agent verification, direct fixes, a git-tracked backlog for deferred findings, and an adversarial review-fix loop.",
+      "category": "engineering",
+      "tags": [
+        "code-review",
+        "quality",
+        "cross-model",
+        "workflow"
+      ]
+    },
+    {
       "name": "my-workflows",
       "source": "./plugins/engineering/my-workflows",
       "description": "Personal engineering workflow commands for creating development worktrees and VS Code workspace files from company dev-f/dev-bg branches.",

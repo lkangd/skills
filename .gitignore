@@ -56,3 +56,6 @@ evals
 # private
 .private/
 *.draft.md
+
+# code-review plugin run artifacts
+.claude/code-review/

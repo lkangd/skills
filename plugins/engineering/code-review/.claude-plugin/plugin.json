@@ -1,0 +1,8 @@
+{
+  "name": "code-review",
+  "description": "Review-verify-fix workflow in one command: parallel read-only reviewers (cross-model via a configurable runner), main-agent verification, direct fixes, a git-tracked backlog for deferred findings, and an adversarial review-fix loop.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}
