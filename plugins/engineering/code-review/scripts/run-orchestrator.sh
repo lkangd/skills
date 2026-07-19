@@ -167,7 +167,12 @@ AGENTS_JSON='{
   }
 }'
 
-CODE_REVIEW_CHILD=1 $RUNNER -p "$(cat "$PROMPT_FILE")" \
+# CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0: a headless (-p) session terminates ~600s after its
+# final turn if background tasks are still pending, killing every reviewer subagent mid-run
+# (observed: orchestrator backgrounded its reviewers, died at the ceiling with exit 0 and a
+# truncated report). The orchestrator is also instructed to dispatch synchronously; this env
+# is the belt-and-braces for a model that backgrounds anyway.
+CODE_REVIEW_CHILD=1 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 $RUNNER -p "$(cat "$PROMPT_FILE")" \
   --allowedTools "$ALLOWED" \
   --disallowedTools "$DISALLOWED" \
   --agents "$AGENTS_JSON" \

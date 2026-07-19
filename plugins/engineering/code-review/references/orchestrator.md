@@ -53,6 +53,12 @@ with the absolute path of the packet you wrote, `{{REPO_ROOT}}` with the repo ro
 Then dispatch one subagent per angle with the prompt:
 "Read and execute the instructions in <absolute path to the angle prompt file>."
 
+Dispatch every subagent **synchronously** (a foreground tool call whose result you wait for
+in the same turn) — NEVER as a background task. You run in a headless session: background
+tasks still pending when your turn ends are terminated wholesale, killing the reviewers
+mid-run and truncating the whole round. Parallelism comes from issuing multiple foreground
+dispatches in one message, not from backgrounding.
+
 **Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the packet's
 diff section exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
 `removed-behavior`, then `callers`) instead of dispatching them once: group the changed files

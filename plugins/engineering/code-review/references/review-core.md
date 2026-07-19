@@ -62,7 +62,13 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
    `.claude/` — Claude Code's sensitive-file protection auto-denies headless writes there).
    The launcher script creates it.
 2. Round 2+ only: write the known-issues list (§6) to `RUN_DIR/known-issues.md`.
-3. Launch, with `run_in_background: true`, then poll until it finishes:
+3. Launch the script as a **background task** (`run_in_background: true`) — this is
+   mandatory, not an optimization. The script blocks for the entire review (10–40+ min),
+   far beyond the foreground Bash tool timeout: a foreground launch gets killed at the
+   timeout, wasting every reviewer token spent so far. Do not pass a `timeout`. After
+   launching, do NOT busy-wait: no `sleep` loops, no repeated file reads — end your turn
+   and wait for the harness's background-task completion notification, then continue at
+   step 4. Launch command:
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator.sh" \
      --runner "<runner from config>" \
@@ -94,7 +100,11 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
    orchestrator). The `CODE-REVIEW RESULT:` marker line above it carries the stats; treat it
    as prose and survive its absence or translation — only a missing/unparseable json block
    (or a non-zero exit code) is a failure: read `orchestrator.err`, report the failure to the
-   user, and stop — relaunch at most once, and only if the failure was clearly environmental.
+   user, and stop — relaunch at most once, and only if the failure was clearly environmental
+   AND you have confirmed the previous orchestrator process actually exited
+   (`RUN_DIR/out/orchestrator.exit` exists). Never have two orchestrators alive at once, and
+   never relaunch to "retry" a round whose tokens are already spent unless the report is
+   truly unusable.
 
 While waiting, do nothing else — no speculative fixes, no other tasks.
 
