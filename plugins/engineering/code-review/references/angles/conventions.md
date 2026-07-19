@@ -26,16 +26,27 @@ intentional in the diff or commit message.
 
 ## Output format (mandatory)
 
-If you find nothing: output exactly `No findings.` — a literal machine-parsed English string; never translate it, whatever language you review in.
+Surface up to 6 candidate findings, most severe first. You are a finder, not the judge: an
+independent verifier examines every candidate next, and refuting is its job, not yours. Pass
+every candidate where you can quote the exact rule and the exact violating line through — do
+not silently drop half-believed candidates.
 
-Otherwise output one block per finding, most severe first:
+Your entire final message must be exactly one fenced ```json code block containing an array
+of finding objects — no prose before or after it. Nothing qualifies after a genuine pass =
+the empty array `[]`. The JSON keys and the severity values are machine-parsed ASCII
+protocol: never translate them, whatever language you review in; string values may be in any
+language.
 
+```json
+[
+  {
+    "severity": "critical|major|minor|nit",
+    "title": "<one-line title>",
+    "file": "<repo-relative path>",
+    "line": 123,
+    "evidence": "<the violating change, plus a quote of the convention: 'CLAUDE.md says ...'>",
+    "why": "<what breaks or drifts if this lands>",
+    "suggestion": "<smallest viable fix>"
+  }
+]
 ```
-### [critical|major|minor|nit] <one-line title>
-- file: <path>:<line>
-- evidence: <the violating change, plus a quote of the convention: "CLAUDE.md says ...">
-- why: <what breaks or drifts if this lands>
-- suggestion: <smallest viable fix>
-```
-
-Report at most 10 findings; drop the weakest first. No preamble, no summary after the blocks.

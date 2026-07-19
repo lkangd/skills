@@ -11,8 +11,8 @@ fixes what is real, files what must wait, and reports.
 
 | command | what it does |
 |---|---|
-| `/code-review <target> [-c=N]` | One review round: 3 parallel reviewer angles (correctness, conventions, caller impact) → main agent verifies each finding → fixes confirmed in-scope issues, backlogs deferred ones, rejects false positives with reasons. |
-| `/code-review:adversarial <target> [-c=N] [--max-rounds=N]` | The same round 1 plus a 4th angle (design/assumption challenge), then loops: fix → single re-review of the cumulative diff → fix … until a round yields no confirmed major/critical findings or `max_rounds` (default 3) is hit. |
+| `/code-review <target> [-c=N]` | One review round: 8 parallel reviewer angles (line-by-line correctness, removed-behavior audit, cross-file callers, reuse, simplification, efficiency, altitude, CLAUDE.md conventions) → independent verifiers confirm/refute each candidate → main agent re-verifies → fixes confirmed in-scope issues, backlogs deferred ones, rejects false positives with reasons. |
+| `/code-review:adversarial <target> [-c=N] [--max-rounds=N]` | The same round 1 plus three deep angles (design/assumption challenge, language-pitfall specialist, wrapper/proxy correctness) and a post-verification gap sweep, then loops: fix → single re-review of the cumulative diff → fix … until a round yields no confirmed major/critical findings or `max_rounds` (default 3) is hit. |
 | `/code-review:setup` | Interactive per-project configuration, written to `.claude/code-review.local.md`. Runs automatically on first use. |
 
 The **review target** is always explicit — a commit sha or range, `staged`, `working-tree`,
@@ -51,12 +51,17 @@ orchestrator session, and acts on the consolidated result.
      read the packet instead of re-exploring the repo N times;
    - dispatches one read-only reviewer **subagent** per angle — or, when the diff exceeds
      ~1,500 lines, several per high-risk angle, each restricted to a coherent file-group slice —
-     choosing the model tier by task complexity (opus = complex, sonnet = moderate,
-     haiku = simple), batched by `concurrency` (`-c=N` per run);
-   - scores every finding 0–100 for confidence with cheap scorer subagents using the official
-     code-review rubric verbatim, and **filters out everything below 80** (60–79 survive as
-     one-line "near-misses" for the main session to spot-check);
-   - prints one consolidated `CODE-REVIEW RESULT` report.
+     choosing the model tier by task complexity (opus = bug-hunting angles, sonnet = cleanup
+     and moderate angles), batched by `concurrency` (`-c=N` per run). Reviewers are
+     **recall-biased**: they pass every candidate with a nameable failure scenario through
+     instead of self-censoring — filtering is the verify pass's job;
+   - **verifies** every candidate with independent verifier subagents that return
+     `CONFIRMED` / `PLAUSIBLE` / `REFUTED` per candidate (PLAUSIBLE is the default; REFUTED
+     requires evidence constructible from the code) and drops only the refuted ones;
+   - prints one consolidated `CODE-REVIEW RESULT` report whose payload is a fenced JSON
+     array — every inter-agent handoff (reviewer → orchestrator → verifier → main session)
+     is JSON with ASCII keys, so a non-English-tuned runner model cannot break the protocol
+     by translating labels.
 2. **Verify & act (back in the current session)**: the main agent re-confirms each surviving
    finding against the code. Confirmed and in scope → fixed now. Confirmed but pre-existing /
    too large → one file per issue in the backlog (default `docs/code-review-backlog/`,
@@ -69,7 +74,7 @@ orchestrator session, and acts on the consolidated result.
 Built in response to a real incident where a re-entrant review skill recursively spawned 242
 descendant agents:
 
-- Reviewers and scorers are structurally unable to fan out: they are subagents injected into
+- Reviewers and verifiers are structurally unable to fan out: they are subagents injected into
   the orchestrator via `--agents` with tool allowlists containing no `Task`, no `Skill`, and no
   write tools; the orchestrator itself runs with `Skill` disallowed and inspection-grade Bash
   only. The in-session agent likewise has no delegation tools and runs with
@@ -79,8 +84,8 @@ descendant agents:
   layers.
 - Hard caps independent of model behavior: exactly one orchestrator process per round
   (the script builds the single orchestrator prompt itself from its flags), and inside it at
-  most 6 angle reviewers (large diffs split into file-group slices count against this) plus at
-  most 10 scorers.
+  most 12 angle reviewers (large diffs split into file-group slices count against this) plus
+  at most 10 verifiers.
 - Reviewers always inspect the current working tree — never worktree isolation, which cannot
   see uncommitted changes.
 - All commands are `disable-model-invocation: true` — only the user can trigger them.

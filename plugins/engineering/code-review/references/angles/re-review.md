@@ -26,24 +26,33 @@ Report **new** findings only:
    Apply the correctness lens (logic, error paths, null handling, concurrency, state) to the
    fix hunks specifically.
 3. **Brief full-lens pass**: quickly re-check the cumulative diff for anything clearly major or
-   critical that earlier rounds missed across conventions, caller impact, and design. Do not
-   dredge for minor findings here.
+   critical that earlier rounds missed across removed behavior, caller impact, conventions,
+   and design. Do not dredge for minor findings here.
 
 Explicitly out of scope: everything in the known-issues list, pre-existing issues on unchanged
 lines, style, linter territory, and nitpicks.
 
 ## Output format (mandatory)
 
-If you find nothing: output exactly `No findings.` — a literal machine-parsed English string; never translate it, whatever language you review in.
+Surface up to 8 candidates, most severe first; an independent verifier judges them next, so
+pass every candidate with a nameable failure scenario through.
 
-Otherwise output one block per finding, most severe first:
+Your entire final message must be exactly one fenced ```json code block containing an array
+of finding objects — no prose before or after it. Nothing qualifies after a genuine pass =
+the empty array `[]`. The JSON keys and the severity values are machine-parsed ASCII
+protocol: never translate them, whatever language you review in; string values may be in any
+language.
 
+```json
+[
+  {
+    "severity": "critical|major|minor|nit",
+    "title": "<one-line title>",
+    "file": "<repo-relative path>",
+    "line": 123,
+    "evidence": "<what the diff does, quoting the relevant lines; for incomplete fixes, name the known issue>",
+    "why": "<the concrete failure scenario>",
+    "suggestion": "<smallest viable fix>"
+  }
+]
 ```
-### [critical|major|minor|nit] <one-line title>
-- file: <path>:<line>
-- evidence: <what the diff does, quoting the relevant lines; for incomplete fixes, name the known issue>
-- why: <the concrete failure scenario>
-- suggestion: <smallest viable fix>
-```
-
-Report at most 10 findings; drop the weakest first. No preamble, no summary after the blocks.

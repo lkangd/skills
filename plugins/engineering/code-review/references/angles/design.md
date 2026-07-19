@@ -27,16 +27,25 @@ were made deliberately.
 
 ## Output format (mandatory)
 
-If you find nothing: output exactly `No findings.` — a literal machine-parsed English string; never translate it, whatever language you review in.
+Surface up to 6 candidates, most severe first; an independent verifier judges them next, so
+pass every candidate with a concrete risk and alternative through.
 
-Otherwise output one block per finding, most severe first:
+Your entire final message must be exactly one fenced ```json code block containing an array
+of finding objects — no prose before or after it. Nothing qualifies after a genuine pass =
+the empty array `[]`. The JSON keys and the severity values are machine-parsed ASCII
+protocol: never translate them, whatever language you review in; string values may be in any
+language.
 
+```json
+[
+  {
+    "severity": "critical|major|minor|nit",
+    "title": "<one-line title>",
+    "file": "<repo-relative path>",
+    "line": 123,
+    "evidence": "<the design decision in the diff, quoted>",
+    "why": "<the assumption at risk and the realistic scenario where it breaks>",
+    "suggestion": "<the concrete alternative, and its cost>"
+  }
+]
 ```
-### [critical|major|minor|nit] <one-line title>
-- file: <path>:<line>
-- evidence: <the design decision in the diff, quoted>
-- why: <the assumption at risk and the realistic scenario where it breaks>
-- suggestion: <the concrete alternative, and its cost>
-```
-
-Report at most 6 findings; drop the weakest first. No preamble, no summary after the blocks.

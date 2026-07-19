@@ -38,15 +38,16 @@ Raw arguments: `$ARGUMENTS`
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/review-core.md` and execute it in **loop mode**. You do
 not orchestrate the reviews — each round launches one orchestrator session that does the diff
-collection, reviewer dispatch, and confidence scoring, and hands you a consolidated report:
+collection, reviewer dispatch, and finding verification, and hands you a consolidated report:
 
 1. Safety rules (§0), load config (§1) — run setup first if `.claude/code-review.local.md` is
    missing.
 2. Resolve the review target (§2).
 3. **Round 1**: launch ONE orchestrator with angles
-   `correctness, conventions, callers, design` (§3), or execute the orchestrator procedure
-   yourself if config says `runner: in-session` (§4). Then verify the surviving (≥ 80)
-   findings and fix / backlog / reject per §5.
+   `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions, design, pitfalls, wrapper`
+   (§3) — the orchestrator also runs a post-verification gap sweep in this mode — or execute
+   the orchestrator procedure yourself if config says `runner: in-session` (§4). Then verify
+   the surviving (CONFIRMED / PLAUSIBLE) findings and fix / backlog / reject per §5.
 4. **Rounds 2..max_rounds**: follow the loop protocol (§6) exactly — continue only while the
    previous round produced confirmed major/critical findings that you fixed; each later round
    launches one orchestrator with angles `re-review` on the cumulative diff, with the
@@ -54,5 +55,5 @@ collection, reviewer dispatch, and confidence scoring, and hands you a consolida
 5. Report per §7, including how many rounds ran and why the loop stopped. Do not commit
    anything.
 
-Budget invariant: exactly one orchestrator launch per round. All reviewer/scorer fan-out
-happens inside the orchestrator under its own caps (≤ 6 reviewers, ≤ 10 scorers).
+Budget invariant: exactly one orchestrator launch per round. All reviewer/verifier fan-out
+happens inside the orchestrator under its own caps (≤ 12 reviewers, ≤ 10 verifiers).

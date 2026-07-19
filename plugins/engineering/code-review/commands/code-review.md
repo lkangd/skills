@@ -37,15 +37,15 @@ Raw arguments: `$ARGUMENTS`
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/review-core.md` and execute it in **single-pass mode**
 (one review round, no loop). You do not orchestrate the review — one orchestrator session does
-the diff collection, reviewer dispatch, and confidence scoring, and hands you a consolidated
-report:
+the diff collection, 8-angle reviewer dispatch, and finding verification, and hands you a
+consolidated report:
 
 1. Safety rules (§0), load config (§1) — run setup first if `.claude/code-review.local.md` is
    missing.
 2. Resolve the review target (§2).
 3. Launch ONE orchestrator via the bundled script with angles
-   `correctness, conventions, callers` (§3), or execute the orchestrator procedure yourself if
-   config says `runner: in-session` (§4). Wait for the consolidated, confidence-filtered
-   (≥ 80) findings.
+   `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions`
+   (§3), or execute the orchestrator procedure yourself if config says `runner: in-session`
+   (§4). Wait for the consolidated, verified (CONFIRMED / PLAUSIBLE) findings.
 4. Verify every surviving finding against the code, then fix / backlog / reject per §5.
 5. Report per §7. Do not commit anything.

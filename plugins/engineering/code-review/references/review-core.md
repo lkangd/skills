@@ -10,7 +10,7 @@ Never assume it is a pull request.
 ## Division of labor
 
 You (the current session) do NOT orchestrate the review. The entire pipeline — diff
-collection, reviewer dispatch, confidence scoring, consolidation — runs inside one dedicated
+collection, reviewer dispatch, finding verification, consolidation — runs inside one dedicated
 orchestrator session launched through the configured runner. Your job is only:
 
 1. resolve the review target,
@@ -27,7 +27,7 @@ the orchestrator procedure yourself (§4).
   reviewer/orchestrator process. Refuse and stop.
 - Launch at most ONE orchestrator process per round, via the bundled script only. Never invoke
   the runner ad hoc, and never call the script twice in a round.
-- Reviewers and scorers are read-only subagents of the orchestrator; never spawn review
+- Reviewers and verifiers are read-only subagents of the orchestrator; never spawn review
   subagents from the current session in external mode.
 - Never use worktree isolation anywhere in this workflow.
 - Never commit, push, stage, or revert anything unless the user explicitly asks.
@@ -76,19 +76,25 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
    `--diff-args` by target type — single commit `X`: `X^..X`; commit range `A..B`: `A^..B`;
    staged: `--cached`; working tree: `HEAD`; files: `HEAD -- <paths>`; branch:
    `<base>...HEAD`.
-   Angle lists: `/code-review` round 1: `correctness, conventions, callers`;
-   `/code-review:adversarial` round 1: those plus `design`; any round 2+: `re-review` only.
+   Angle lists — round 1 always dispatches the full 8-angle set (3 bug-hunting + 4
+   cleanup/altitude + conventions):
+   `/code-review` round 1:
+   `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions`;
+   `/code-review:adversarial` round 1: those plus `design, pitfalls, wrapper` (the presence
+   of `design` also makes the orchestrator run a post-verification gap sweep); any round 2+:
+   `re-review` only.
    The script builds the orchestrator prompt AND the diff packet itself (fails fast on a bad
    diff spec) — never read or fill `references/orchestrator.md` in this session. It also
    enforces the `CODE_REVIEW_CHILD` sentinel and injects the read-only
-   `reviewer-deep`/`reviewer`/`scorer` subagent definitions.
-4. Read `RUN_DIR/out/orchestrator.out` and parse it **starting at the first line that begins
-   with `CODE-REVIEW RESULT:`** — silently discard anything before that marker (orchestrators
-   sometimes leak bookkeeping prose). After the marker: zero or more finding blocks, each
-   already confidence-scored (only ≥ 80 survive), optionally followed by a one-line-per-item
-   near-miss list (scored 60–79, unconfirmed). If the marker is missing or the exit code is
-   non-zero, read `orchestrator.err`, report the failure to the user, and stop — relaunch at
-   most once, and only if the failure was clearly environmental.
+   `reviewer-deep`/`reviewer`/`verifier` subagent definitions.
+4. Read `RUN_DIR/out/orchestrator.out`. The authoritative payload is the **last fenced
+   ```json block**: an array of finding objects (`severity`, `verdict`, `angle`, `title`,
+   `file`, `line`, `evidence`, `why`, `suggestion`, `verdict_evidence`), already verified
+   (verdict `CONFIRMED` or `PLAUSIBLE`; refuted candidates were dropped inside the
+   orchestrator). The `CODE-REVIEW RESULT:` marker line above it carries the stats; treat it
+   as prose and survive its absence or translation — only a missing/unparseable json block
+   (or a non-zero exit code) is a failure: read `orchestrator.err`, report the failure to the
+   user, and stop — relaunch at most once, and only if the failure was clearly environmental.
 
 While waiting, do nothing else — no speculative fixes, no other tasks.
 
@@ -104,22 +110,28 @@ substitutions:
   target description, `git diff <args> --stat` list, known issues (round 2+), and the full
   `git diff <args>` output, using the same `--diff-args` mapping as §3 — then continue with
   orchestrator.md Step 1's completion tasks (conventions, untracked files).
-- Dispatch angle reviewers and scorers via the `Agent` tool with
+- Dispatch angle reviewers and verifiers via the `Agent` tool with
   `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
 - Choose the model per dispatch with the `model` parameter using tier aliases
-  (opus = complex angles, sonnet = moderate angles, haiku = scorers), matching the tier
+  (opus = complex angles, sonnet = moderate angles and verifiers), matching the tier
   guidance in orchestrator.md. Aliases resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping
   automatically.
-- The orchestrator's budget caps (≤ 6 reviewers including large-diff splits, ≤ 10 scorers,
-  total 16) apply unchanged.
-- Then continue at §5 with the surviving (≥ 80) findings.
+- The orchestrator's budget caps (≤ 12 reviewers including large-diff splits, ≤ 10 verifiers,
+  total 22) apply unchanged.
+- Then continue at §5 with the surviving (CONFIRMED / PLAUSIBLE) findings.
 
 ## §5 Verify findings and act
 
 For each finding in the consolidated report, verify it yourself against the actual code — the
-confidence score is a strong signal, not a substitute for your own check. Then classify:
+orchestrator's verdict is a strong signal, not a substitute for your own check. `CONFIRMED`
+findings come with a named trigger: check the quoted evidence holds. `PLAUSIBLE` findings have
+a real mechanism but an uncertain trigger: decide yourself whether the trigger is realistic
+before acting — the finding's `verdict_evidence` field says what would confirm it. Then
+classify:
 
-- **Confirmed, in scope** → fix it now with the smallest change that resolves it.
+- **Confirmed, in scope** → fix it now with the smallest change that resolves it. For
+  cleanup/altitude/conventions findings "confirmed" means the cost is real and the suggested
+  simpler/deeper form actually works.
 - **Confirmed, but out of scope** (pre-existing, or the fix is large/risky relative to the
   review target) → file it in the backlog: one file per issue in `backlog_dir` following
   `${CLAUDE_PLUGIN_ROOT}/references/backlog-template.md`. Glob the backlog dir first and update
@@ -127,11 +139,6 @@ confidence score is a strong signal, not a substitute for your own check. Then c
 - **Not confirmed** → record why the finding is wrong (you will report this; do not fix).
 
 Do not soften findings to avoid work, and do not "fix" things no reviewer flagged.
-
-**Near-misses** (the 60–79 one-liners, if any) are not findings. Give each a quick
-plausibility check — open the anchor location, a minute or two apiece, no deep dive. If one
-looks real, promote it: verify and classify it exactly like a finding above. Otherwise drop it
-silently; near-misses you did not promote are not "rejected" and need no rebuttal.
 
 ## §6 Loop protocol (adversarial mode only)
 
@@ -150,10 +157,9 @@ After round N's fixes:
 
 End with a single consolidated report:
 
-- Per finding: severity, confidence score, `file:line`, angle, verdict (**fixed** /
-  **backlogged** with file path / **rejected** with one-line reason). Near-misses you
-  promoted are reported the same way (marked "promoted near-miss"); unpromoted ones get at
-  most a count.
+- Per finding: severity, orchestrator verdict (CONFIRMED/PLAUSIBLE), `file:line`, angle,
+  disposition (**fixed** / **backlogged** with file path / **rejected** with one-line
+  reason).
 - Adversarial: rounds executed and why the loop stopped.
 - Paths: `RUN_DIR` and any backlog files written.
 - Remind the user that nothing was committed.
