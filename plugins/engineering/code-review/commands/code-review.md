@@ -31,9 +31,9 @@ Raw arguments: `$ARGUMENTS`
 - `-c=N` → concurrency override for this run.
 - `resume [<run-dir>]` → do not start a new review: resume a previously failed round per
   review-core.md §3 "Resuming a failed round". With no run-dir, locate the newest
-  `.code-review/runs/*/round-*` whose `out/orchestrator.out` lacks a ` ```json ` block and
-  confirm it with the user, then launch the script with `--resume` (background task), wait,
-  and continue at §3 step 4 → §5 → §7.
+  `.code-review/runs/*/round-*` without a usable result (no non-empty `out/findings.json`,
+  no ` ```json ` block in `out/orchestrator.out`) and confirm it with the user, then launch
+  the script with `--resume` (background task), wait, and continue at §3 step 4 → §5 → §7.
 - Everything else is the **review target** (审查内容): commit sha(s) or range, `staged`,
   `working-tree`, file paths, `branch <base>`, or a description that maps to one of these.
   If empty, you will ask — never assume a default.

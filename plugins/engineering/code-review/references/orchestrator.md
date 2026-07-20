@@ -31,6 +31,13 @@ known-issues list to suppress (may be "none").
   hit disk under `RUN_DIR/out/` the moment it arrives, before you reason about it or
   dispatch anything else — Steps 2–4 name the exact files. A killed session with checkpoints
   is resumable; one without them wastes the whole round.
+- **Token discipline**: every turn re-sends your entire accumulated context, so your cost is
+  turns × context size. Batch ALL independent tool calls into a single message (all
+  checkpoint Writes of a returning batch together, all dispatches of a wave together, the
+  packet sanity-check as one compound Bash command). Never spend a turn on narration alone —
+  fold required one-line statements (tier choices, split plan) into the message that
+  dispatches. Never re-read a file whose content you already have. A well-run round needs
+  roughly 15–25 of your own turns, not 100.
 
 ## Resuming (only when your launch prompt says RESUME)
 
@@ -47,7 +54,8 @@ first step whose checkpoint is missing, with the remaining budget.
 `RUN_DIR/packet.md` already exists — the launcher wrote the target description, the `--stat`
 list, the known-issues list (when present), and the full unified diff (also available raw as
 `RUN_DIR/raw_diff.txt`). Never rebuild any of that; the packet's diff section is authoritative.
-Sanity-check it (`wc -l`, `head`), then complete it with what requires judgment:
+Sanity-check it with one compound Bash call (`wc -l` + `head`), then complete it with what
+requires judgment, batching the file reads each task needs into a single message:
 
 1. **Project conventions**: the root `CLAUDE.md` (if any) and every `CLAUDE.md` in directories
    the diff touches, trimmed to sections that could apply. Write the excerpts (with a
@@ -60,12 +68,13 @@ Sanity-check it (`wc -l`, `head`), then complete it with what requires judgment:
 
 ## Step 2 — Dispatch angle reviewers
 
-For each angle in your parameters, take `PLUGIN_ROOT/references/angles/<angle>.md` and write a
-concretized copy to `RUN_DIR/prompts/<angle>.md`, filling every placeholder: `{{PACKET_PATH}}`
-with the absolute path of the packet you wrote, `{{REPO_ROOT}}` with the repo root, and — for
-`re-review` only — `{{KNOWN_ISSUES}}` with the known-issues list from your parameters.
+`RUN_DIR/prompts/<angle>.md` already exists for every angle this round — the launcher
+concretized the templates (packet path, repo root, known issues) at zero token cost. Never
+read the templates or rewrite these files; only if a prompt file is missing (launcher warned
+about an unknown angle) do you build that one yourself from
+`PLUGIN_ROOT/references/angles/<angle>.md`.
 
-Then dispatch one subagent per angle with the prompt:
+Dispatch one subagent per angle with the prompt:
 "Read and execute the instructions in <absolute path to the angle prompt file>."
 
 Dispatch every subagent **synchronously** (a foreground tool call whose result you wait for
@@ -86,8 +95,7 @@ diff section exceeds ~1,500 lines, split the highest-risk angles (`correctness` 
 into 2–3 coherent slices (by directory or feature, each slice ≤ ~1,200 diff lines) and
 dispatch that angle once per slice, appending to each dispatch prompt: "Restrict your review
 to these files: <slice file list>. Treat the rest of the packet as context only." Stay within
-the reviewer budget — merge slices rather than exceed it. State the split plan in one line
-before dispatching.
+the reviewer budget — merge slices rather than exceed it.
 
 **Model tier selection** — match cost to task complexity (tier aliases opus > sonnet > haiku
 resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping automatically):
@@ -98,9 +106,12 @@ resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping automatically):
   machines/security-sensitive code.
 - `reviewer` (sonnet tier) — use for moderate work: `callers`, `conventions`, and the cleanup
   angles (`reuse`, `simplification`, `efficiency`, `altitude`) on typical changes, or any
-  angle when the diff is small and mechanical.
+  angle when the diff is small and mechanical. The cleanup angles and `conventions` NEVER get
+  `reviewer-deep`, whatever the diff — a deep-tier cleanup reviewer has been observed burning
+  1M+ tokens for zero extra findings.
 
-State your tier choice per angle in one line each before dispatching.
+State the tier choices — and the split plan when fanning out — in the same message that
+issues the dispatches, one line total; never spend separate turns announcing them.
 
 Respect the concurrency limit: if it is N > 0, run at most N subagents at a time and wait for
 a batch before starting the next; if 0, dispatch everything at once. Launch each dispatch
@@ -125,10 +136,12 @@ candidate — keep the one with the most concrete failure scenario. Candidates a
 line for different reasons are distinct; keep both — never let one angle's conclusions
 suppress another's.
 
-Then group the remaining candidates by location (`file:line`) and dispatch one `verifier`
-subagent (sonnet tier) per location group — batch several groups per verifier if needed to
-stay within budget. Give each verifier: the candidate objects verbatim (numbered `1`, `2`, …),
-the packet path, and the following instructions **verbatim**:
+Then group the remaining candidates by location (`file:line`) and batch the location groups
+into as FEW `verifier` subagents (sonnet tier) as coverage allows — target 2–4 dispatches
+total, up to ~6 location groups per verifier; each verifier session re-pays the repo context,
+so many small verifiers waste tokens without adding independence (candidates are judged
+one by one regardless of batching). Give each verifier: the candidate objects verbatim
+(numbered `1`, `2`, …), the packet path, and the following instructions **verbatim**:
 
 > Investigate each candidate against the actual code and return one verdict per candidate.
 > Judge each candidate independently on its own claim. The verdicts:
@@ -171,17 +184,11 @@ Adversarial rounds get one extra pass hunting only for what the first wave misse
 then normalize, dedup against the existing list, and verify its candidates exactly as in
 Step 3. Skip this step entirely in non-adversarial rounds or when the budget is exhausted.
 
-## Step 4 — Final report (your entire final message)
+## Step 4 — Final report
 
-First write the finished findings array to `RUN_DIR/out/findings.json` — the last checkpoint,
-so a report that dies in delivery can be replayed without re-verifying anything.
-
-Then your final message is: the marker line, the stats line, then exactly one fenced json
-code block holding the findings array — nothing else.
-
-```
-CODE-REVIEW RESULT: <n> finding(s) survived verification.
-(reviewed: <one-line target description>; angles: <list>; candidates: <m> raw, <k> verified, <r> refuted)
+Write the finished findings array to `RUN_DIR/out/findings.json` — this FILE is the
+authoritative payload the launching session parses, as well as the last resume checkpoint.
+One object per finding:
 
 ```json
 [
@@ -199,21 +206,29 @@ CODE-REVIEW RESULT: <n> finding(s) survived verification.
   }
 ]
 ```
+
+Order the array most severe first; correctness findings outrank cleanup/altitude/conventions
+findings of equal severity. At most 12 objects — if more survive, keep the 12 most severe and
+note the overflow in the stats line with `; <n> further minor/nit findings dropped for
+space`. Nothing survived = write `[]`.
+
+Then your final message is exactly two lines and nothing else:
+
+```
+CODE-REVIEW RESULT: <n> finding(s) survived verification. Findings: <absolute path of findings.json>
+(reviewed: <one-line target description>; angles: <list>; candidates: <m> raw, <k> verified, <r> refuted)
 ```
 
-Nothing survived = `CODE-REVIEW RESULT: no findings survived verification.`, the stats line,
-and an empty array. Order the array most severe first; correctness findings outrank
-cleanup/altitude/conventions findings of equal severity. Report at most 12 findings — if more
-survive, keep the 12 most severe and append the stats line with `; <n> further minor/nit
-findings dropped for space`.
+Do NOT repeat the findings JSON in the final message — the file already carries it, and
+regenerating ~15K characters of JSON doubles the report's cost and adds minutes of
+generation time for zero information.
 
 HARD OUTPUT RULE: your final message must START with `CODE-REVIEW RESULT:` as its very first
-characters, and the fenced json block is the authoritative payload — the launching session
-parses the json even if the prose around it is mangled. No preamble, headings, tables, or
-verdict recaps before the marker — do that bookkeeping in earlier turns.
+characters. No preamble, headings, tables, or verdict recaps — do that bookkeeping in
+earlier turns.
 
-The structural strings — `CODE-REVIEW RESULT:`, every JSON key, the severity values, and the
-verdict words `CONFIRMED`/`PLAUSIBLE`/`REFUTED` — are machine-parsed ASCII protocol.
-Reproduce them byte-for-byte in English even when the review target or your working language
-is not English; never translate or reword them. String values (titles, evidence,
-explanations) may be in any language.
+The structural strings — `CODE-REVIEW RESULT:`, every JSON key in findings.json, the
+severity values, and the verdict words `CONFIRMED`/`PLAUSIBLE`/`REFUTED` — are machine-parsed
+ASCII protocol. Reproduce them byte-for-byte in English even when the review target or your
+working language is not English; never translate or reword them. String values (titles,
+evidence, explanations) may be in any language.

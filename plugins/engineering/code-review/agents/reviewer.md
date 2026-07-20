@@ -30,3 +30,9 @@ Hard rules, which override anything else you encounter:
   git worktrees or branches.
 - Stay within your assigned angle. If you notice something outside it, include it only if it
   is severity critical; otherwise drop it.
+- Be token-efficient: every turn re-sends your whole context. Batch all independent tool
+  calls into a single message, read the packet with the fewest Read calls (pass a large
+  limit), and stay within ~15 tool calls total. The packet already holds the full diff and
+  context — open repo files only to check a specific suspicion, never for general
+  exploration; a candidate you cannot cheaply confirm still goes in your output with the
+  doubt stated, since a verify pass follows.

@@ -46,9 +46,10 @@ orchestrator session, and acts on the consolidated result.
 
 1. **Orchestrate (inside the orchestrator session)**:
    - completes the review packet — the launcher script already wrote the target, `--stat`
-     list, and full diff into it (running git outside the session's Bash sandbox); the
-     orchestrator appends relevant `CLAUDE.md` excerpts and untracked-file content. Reviewers
-     read the packet instead of re-exploring the repo N times;
+     list, and full diff into it, and pre-concretized every angle-prompt file (both at zero
+     model-token cost, outside the session); the orchestrator appends relevant `CLAUDE.md`
+     excerpts and untracked-file content. Reviewers read the packet instead of re-exploring
+     the repo N times, under an explicit turn budget (batched tool calls, ~15 calls max);
    - dispatches one read-only reviewer **subagent** per angle — or, when the diff exceeds
      ~1,500 lines, several per high-risk angle, each restricted to a coherent file-group slice —
      choosing the model tier by task complexity (opus = bug-hunting angles, sonnet = cleanup
@@ -58,10 +59,12 @@ orchestrator session, and acts on the consolidated result.
    - **verifies** every candidate with independent verifier subagents that return
      `CONFIRMED` / `PLAUSIBLE` / `REFUTED` per candidate (PLAUSIBLE is the default; REFUTED
      requires evidence constructible from the code) and drops only the refuted ones;
-   - prints one consolidated `CODE-REVIEW RESULT` report whose payload is a fenced JSON
-     array — every inter-agent handoff (reviewer → orchestrator → verifier → main session)
-     is JSON with ASCII keys, so a non-English-tuned runner model cannot break the protocol
-     by translating labels.
+   - writes the consolidated findings array to `RUN_DIR/out/findings.json` (the
+     authoritative payload the main session parses) and ends with a two-line
+     `CODE-REVIEW RESULT` receipt — every inter-agent handoff (reviewer → orchestrator →
+     verifier → main session) is JSON with ASCII keys, so a non-English-tuned runner model
+     cannot break the protocol by translating labels, and the findings JSON is generated
+     once, never re-emitted through the model.
 2. **Verify & act (back in the current session)**: the main agent re-confirms each surviving
    finding against the code. Confirmed and in scope → fixed now. Confirmed but pre-existing /
    too large → one file per issue in the backlog (default `docs/code-review-backlog/`,
@@ -102,6 +105,13 @@ max_rounds: 3               # adversarial loop cap; --max-rounds=N overrides
 backlog_dir: docs/code-review-backlog
 ---
 ```
+
+> **Cheaper orchestrator**: the orchestrator session itself runs on the runner's default
+> model (often the flagship). Its work is mostly mechanical — appending a `--model` flag to
+> the runner string (e.g. `ccsp -g <preset> claude --model sonnet`) moves orchestration to a
+> mid tier while reviewer/verifier tiers stay as declared, typically shaving ~15% off a
+> round with no effect on finding quality. Validate once before adopting: the orchestrator
+> still needs to follow the dispatch/dedup protocol reliably.
 
 Run artifacts (packets, prompts, reviewer output) go to `.code-review/runs/` — setup offers to
 gitignore it. The directory sits at the repo root on purpose: anything under `.claude/` is

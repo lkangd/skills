@@ -93,13 +93,15 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
    diff spec) — never read or fill `references/orchestrator.md` in this session. It also
    enforces the `CODE_REVIEW_CHILD` sentinel and injects the read-only
    `reviewer-deep`/`reviewer`/`verifier` subagent definitions.
-4. Read `RUN_DIR/out/orchestrator.out`. The authoritative payload is the **last fenced
-   ```json block**: an array of finding objects (`severity`, `verdict`, `angle`, `title`,
-   `file`, `line`, `evidence`, `why`, `suggestion`, `verdict_evidence`), already verified
-   (verdict `CONFIRMED` or `PLAUSIBLE`; refuted candidates were dropped inside the
-   orchestrator). The `CODE-REVIEW RESULT:` marker line above it carries the stats; treat it
-   as prose and survive its absence or translation — only a missing/unparseable json block
-   (or a non-zero exit code) is a failure. On failure: the script has already auto-resumed
+4. Read the result. The authoritative payload is **`RUN_DIR/out/findings.json`**: an array
+   of finding objects (`severity`, `verdict`, `angle`, `title`, `file`, `line`, `evidence`,
+   `why`, `suggestion`, `verdict_evidence`), already verified (verdict `CONFIRMED` or
+   `PLAUSIBLE`; refuted candidates were dropped inside the orchestrator).
+   `RUN_DIR/out/orchestrator.out` holds a two-line receipt (`CODE-REVIEW RESULT:` marker +
+   stats); treat it as prose and survive its absence or translation. Fallback: if
+   findings.json is missing or unparseable, use the **last fenced ```json block** in
+   orchestrator.out. A failure is: a non-zero exit code, or neither a parseable
+   findings.json nor a json block. On failure: the script has already auto-resumed
    the orchestrator session once internally, so do NOT blindly relaunch. Read
    `orchestrator.err`, confirm the process actually exited (`RUN_DIR/out/orchestrator.exit`
    exists), then resume — never restart — the round per "Resuming a failed round" below, at
@@ -127,8 +129,9 @@ the first incomplete step); if that yields no report it launches a fresh salvage
 that trusts the checkpoints and re-does only what is missing. On completion, continue at §3
 step 4 as if the round had run normally. This also works across sessions: when the user asks
 to resume a review that died earlier (e.g. after a usage-limit reset), locate the newest
-`.code-review/runs/*/round-*` whose `out/orchestrator.out` has no ` ```json ` block, confirm
-it with the user, and resume it instead of starting a new round.
+`.code-review/runs/*/round-*` without a usable result (no non-empty `out/findings.json` and
+no ` ```json ` block in `out/orchestrator.out`), confirm it with the user, and resume it
+instead of starting a new round.
 
 ## §4 In-session mode (`runner: in-session`)
 
@@ -141,7 +144,9 @@ substitutions:
 - No launcher pre-builds the packet in-session: write `RUN_DIR/packet.md` yourself first —
   target description, `git diff <args> --stat` list, known issues (round 2+), and the full
   `git diff <args>` output, using the same `--diff-args` mapping as §3 — then continue with
-  orchestrator.md Step 1's completion tasks (conventions, untracked files).
+  orchestrator.md Step 1's completion tasks (conventions, untracked files). Likewise
+  concretize `RUN_DIR/prompts/<angle>.md` from the templates yourself (orchestrator.md
+  Step 2 assumes the launcher did it; in-session there is none).
 - Dispatch angle reviewers and verifiers via the `Agent` tool with
   `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
 - Choose the model per dispatch with the `model` parameter using tier aliases
