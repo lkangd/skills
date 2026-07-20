@@ -99,14 +99,36 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
    (verdict `CONFIRMED` or `PLAUSIBLE`; refuted candidates were dropped inside the
    orchestrator). The `CODE-REVIEW RESULT:` marker line above it carries the stats; treat it
    as prose and survive its absence or translation — only a missing/unparseable json block
-   (or a non-zero exit code) is a failure: read `orchestrator.err`, report the failure to the
-   user, and stop — relaunch at most once, and only if the failure was clearly environmental
-   AND you have confirmed the previous orchestrator process actually exited
-   (`RUN_DIR/out/orchestrator.exit` exists). Never have two orchestrators alive at once, and
-   never relaunch to "retry" a round whose tokens are already spent unless the report is
-   truly unusable.
+   (or a non-zero exit code) is a failure. On failure: the script has already auto-resumed
+   the orchestrator session once internally, so do NOT blindly relaunch. Read
+   `orchestrator.err`, confirm the process actually exited (`RUN_DIR/out/orchestrator.exit`
+   exists), then resume — never restart — the round per "Resuming a failed round" below, at
+   most once; if that also fails (e.g. quota exhausted until a stated reset time), report the
+   failure and the exact resume command to the user and stop. Never have two orchestrators
+   alive at once, and never relaunch from scratch for a round whose tokens are already spent.
 
 While waiting, do nothing else — no speculative fixes, no other tasks.
+
+### Resuming a failed round
+
+A round whose orchestrator died is not lost: the packet, prompts, the orchestrator session
+id (`RUN_DIR/session-id`), and per-step checkpoints (`RUN_DIR/out/candidates-*.json`,
+`verdicts-*.json`, `findings.json`) survive on disk. Resume it — as a background task, same
+as a launch — with:
+
+```
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator.sh" --resume \
+  --runner "<runner from config>" \
+  --run-dir "<the failed RUN_DIR>"
+```
+
+The script first resumes the original orchestrator session (context intact, it continues at
+the first incomplete step); if that yields no report it launches a fresh salvage session
+that trusts the checkpoints and re-does only what is missing. On completion, continue at §3
+step 4 as if the round had run normally. This also works across sessions: when the user asks
+to resume a review that died earlier (e.g. after a usage-limit reset), locate the newest
+`.code-review/runs/*/round-*` whose `out/orchestrator.out` has no ` ```json ` block, confirm
+it with the user, and resume it instead of starting a new round.
 
 ## §4 In-session mode (`runner: in-session`)
 

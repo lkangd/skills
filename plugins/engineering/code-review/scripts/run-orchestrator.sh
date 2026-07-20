@@ -4,6 +4,7 @@
 # usage: run-orchestrator.sh --runner '<cmd prefix>' --run-dir <dir> \
 #          --target '<review target spec>' --diff-args '<git diff arguments>' \
 #          --angles '<angle list>' [--concurrency <n>] [--known-issues-file <path>]
+#        run-orchestrator.sh --resume --runner '<cmd prefix>' --run-dir <dir>
 #
 # This script owns prompt AND packet-skeleton construction. It writes a small bootstrap
 # prompt into <run-dir>/orchestrator-prompt.md, and pre-builds <run-dir>/packet.md
@@ -18,12 +19,22 @@
 # read-only with no delegation tools. stdout/stderr/exit code land in
 # <run-dir>/out/orchestrator.out|.err|.exit.
 #
+# Crash resilience: the session is launched with a fixed --session-id (saved to
+# <run-dir>/session-id) and the orchestrator checkpoints reviewer/verifier results to
+# <run-dir>/out/ as they arrive. If the session dies without delivering a parseable report
+# (API error, quota, kill), this script automatically resumes the session once. --resume
+# re-enters a failed round later: it first resumes the original session (full context
+# preserved), and if that fails launches a fresh salvage session that trusts the on-disk
+# checkpoints and re-does only the incomplete steps. Prior attempts' outputs are rotated to
+# orchestrator.out.<n> — orchestrator.out always holds the latest attempt.
+#
 # set -e/pipefail omitted on purpose: the orchestrator's exit code must be captured and
 # surfaced via the .exit file rather than aborting this wrapper.
 set -u
 
 usage() {
   echo "usage: run-orchestrator.sh --runner '<cmd prefix>' --run-dir <dir> --target '<spec>' --diff-args '<git diff arguments>' --angles '<list>' [--concurrency <n>] [--known-issues-file <path>]" >&2
+  echo "       run-orchestrator.sh --resume --runner '<cmd prefix>' --run-dir <dir>" >&2
   exit 2
 }
 
@@ -40,8 +51,10 @@ DIFF_ARGS=""
 ANGLES=""
 CONCURRENCY="0"
 KNOWN_ISSUES_FILE=""
+RESUME=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --resume) RESUME=1; shift ;;
     --runner) [ $# -ge 2 ] || usage; RUNNER="$2"; shift 2 ;;
     --run-dir) [ $# -ge 2 ] || usage; RUN_DIR="$2"; shift 2 ;;
     --target) [ $# -ge 2 ] || usage; TARGET="$2"; shift 2 ;;
@@ -55,7 +68,12 @@ while [ $# -gt 0 ]; do
 done
 
 # Exactly one orchestrator per invocation — this is the fan-out chokepoint.
-[ -n "$RUNNER" ] && [ -n "$RUN_DIR" ] && [ -n "$TARGET" ] && [ -n "$DIFF_ARGS" ] && [ -n "$ANGLES" ] || usage
+if [ "$RESUME" = "1" ]; then
+  [ -n "$RUNNER" ] && [ -n "$RUN_DIR" ] || usage
+  [ -d "$RUN_DIR" ] || { echo "resume: run dir does not exist: $RUN_DIR" >&2; exit 2; }
+else
+  [ -n "$RUNNER" ] && [ -n "$RUN_DIR" ] && [ -n "$TARGET" ] && [ -n "$DIFF_ARGS" ] && [ -n "$ANGLES" ] || usage
+fi
 
 # Pre-create every dir the orchestrator writes into: session-side mkdir/Write under a
 # protected path (e.g. anything in .claude/) would be auto-denied in headless mode.
@@ -64,12 +82,35 @@ RUN_DIR="$(cd "$RUN_DIR" && pwd)" || exit 1
 OUTDIR="$RUN_DIR/out"
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "not inside a git repository" >&2; exit 1; }
+PROMPT_FILE="$RUN_DIR/orchestrator-prompt.md"
+SESSION_FILE="$RUN_DIR/session-id"
+
+# A run "has a result" when the latest attempt exited 0 AND left a fenced json block —
+# the authoritative payload the launching session parses.
+has_result() {
+  [ -f "$OUTDIR/orchestrator.exit" ] && [ "$(cat "$OUTDIR/orchestrator.exit")" = "0" ] \
+    && grep -q '```json' "$OUTDIR/orchestrator.out" 2>/dev/null
+}
+
+# Keep every attempt's output: move the current triple to the next free .<n> suffix so
+# orchestrator.out|err|exit always describe the latest attempt.
+rotate_out() {
+  [ -e "$OUTDIR/orchestrator.out" ] || [ -e "$OUTDIR/orchestrator.err" ] || return 0
+  n=1
+  while [ -e "$OUTDIR/orchestrator.out.$n" ] || [ -e "$OUTDIR/orchestrator.err.$n" ]; do n=$((n+1)); done
+  for f in out err exit; do
+    [ -e "$OUTDIR/orchestrator.$f" ] && mv "$OUTDIR/orchestrator.$f" "$OUTDIR/orchestrator.$f.$n"
+  done
+  return 0
+}
 
 KNOWN_ISSUES="none"
 if [ -n "$KNOWN_ISSUES_FILE" ]; then
   [ -r "$KNOWN_ISSUES_FILE" ] || { echo "known-issues file not readable: $KNOWN_ISSUES_FILE" >&2; exit 2; }
   KNOWN_ISSUES="$(cat "$KNOWN_ISSUES_FILE")"
 fi
+
+if [ "$RESUME" = "0" ]; then
 
 # Pre-build the packet skeleton. DIFF_ARGS is word-split on purpose: it is the argument
 # list for `git diff`, assembled by the launching session (e.g. "A^..B", "--cached",
@@ -110,7 +151,6 @@ PACKET="$RUN_DIR/packet.md"
 # Bootstrap prompt: point the orchestrator at its job description and hand over the
 # parameters. Values substituted here are inert text to the shell — a heredoc expands
 # variables once and never re-interprets their contents.
-PROMPT_FILE="$RUN_DIR/orchestrator-prompt.md"
 cat > "$PROMPT_FILE" <<EOF || exit 1
 You are the review orchestrator for the code-review plugin.
 
@@ -138,6 +178,14 @@ byte-for-byte, never translated, no matter what language you or the review targe
 JSON string values (titles, evidence prose, explanations) may be in another language. A
 report without a parseable json block discards the whole round.
 EOF
+
+fi  # end fresh-launch preparation
+
+[ -r "$PROMPT_FILE" ] || { echo "resume: missing $PROMPT_FILE — this run dir was never launched" >&2; exit 2; }
+if [ "$RESUME" = "1" ] && has_result; then
+  echo "nothing to resume: $OUTDIR/orchestrator.out already holds a parseable result"
+  exit 0
+fi
 
 # The orchestrator may spawn subagents (Task) and write artifacts, but gets no skills,
 # no file edits, and only inspection-grade Bash.
@@ -172,14 +220,77 @@ AGENTS_JSON='{
 # (observed: orchestrator backgrounded its reviewers, died at the ceiling with exit 0 and a
 # truncated report). The orchestrator is also instructed to dispatch synchronously; this env
 # is the belt-and-braces for a model that backgrounds anyway.
-CODE_REVIEW_CHILD=1 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 $RUNNER -p "$(cat "$PROMPT_FILE")" \
-  --allowedTools "$ALLOWED" \
-  --disallowedTools "$DISALLOWED" \
-  --agents "$AGENTS_JSON" \
-  --max-turns 80 \
-  > "$OUTDIR/orchestrator.out" 2> "$OUTDIR/orchestrator.err"
-code=$?
-echo "$code" > "$OUTDIR/orchestrator.exit"
+#
+# launch() runs one orchestrator attempt; callers pass the prompt-selecting args
+# (`-p "<prompt>"` for a fresh session, `-p --resume <sid> "<prompt>"` to continue one).
+launch() {
+  rotate_out
+  CODE_REVIEW_CHILD=1 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 $RUNNER "$@" \
+    --allowedTools "$ALLOWED" \
+    --disallowedTools "$DISALLOWED" \
+    --agents "$AGENTS_JSON" \
+    --max-turns 80 \
+    > "$OUTDIR/orchestrator.out" 2> "$OUTDIR/orchestrator.err"
+  code=$?
+  echo "$code" > "$OUTDIR/orchestrator.exit"
+}
+
+new_session_id() {
+  SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')" || exit 1
+  printf '%s\n' "$SESSION_ID" > "$SESSION_FILE"
+}
+
+# Short prompt for continuing the original session — its context already holds the pipeline
+# state; the checkpoints under out/ cover whatever the transcript lost.
+RESUME_PROMPT="RESUME: your session was interrupted before the final report was delivered.
+Checkpoints under $RUN_DIR/out/ record completed work: each candidates-<angle>.json is that
+angle's collected reviewer output (never re-dispatch those angles), verdicts-*.json are
+completed verifier batches, and findings.json (if present) is the final verified findings
+array — with it, go straight to the final report. Re-read
+$PLUGIN_ROOT/references/orchestrator.md if you need the procedure. Continue the pipeline at
+the first incomplete step and finish. The HARD OUTPUT CONTRACT is unchanged: final message
+starts with CODE-REVIEW RESULT: and ends with exactly one fenced json code block."
+
+if [ "$RESUME" = "0" ]; then
+  new_session_id
+  launch -p --session-id "$SESSION_ID" "$(cat "$PROMPT_FILE")"
+  # Auto-resume once: a session that died without a parseable report (API error, quota,
+  # kill) usually resumes cheaply — its context and checkpoints survive. A dead-on-arrival
+  # resume (e.g. quota still exhausted) fails fast and costs nothing.
+  if ! has_result; then
+    echo "no parseable result (exit $code) — auto-resuming session $SESSION_ID once" >&2
+    launch -p --resume "$SESSION_ID" "$RESUME_PROMPT"
+  fi
+else
+  # Explicit resume: first continue the original session (full context preserved) …
+  code=1
+  if [ -r "$SESSION_FILE" ]; then
+    SESSION_ID="$(cat "$SESSION_FILE")"
+    launch -p --resume "$SESSION_ID" "$RESUME_PROMPT"
+  fi
+  # … and if that still yields no report (transcript lost, or it poisons the request —
+  # observed: a mid-run 400 that recurs on every resume), fall back to a FRESH session that
+  # trusts the on-disk checkpoints and re-does only the incomplete steps.
+  if ! has_result; then
+    echo "session resume failed (exit $code) — launching fresh salvage session" >&2
+    SALVAGE_PROMPT_FILE="$RUN_DIR/orchestrator-prompt-resume.md"
+    {
+      cat "$PROMPT_FILE"
+      cat <<EOF
+
+RESUME NOTE: a previous orchestrator session for this RUN_DIR was interrupted. Everything
+already on disk is authoritative — do not redo it. Under $RUN_DIR/out/: each
+candidates-<angle>.json is that angle's completed reviewer output (treat the angle as
+dispatched; NEVER re-dispatch it), verdicts-*.json are completed verifier batches, and
+findings.json (if present) is the final verified findings array — with it, skip straight to
+the final report. The packet and prompts/ are already built. Start at the first step whose
+checkpoint is missing.
+EOF
+    } > "$SALVAGE_PROMPT_FILE" || exit 1
+    new_session_id
+    launch -p --session-id "$SESSION_ID" "$(cat "$SALVAGE_PROMPT_FILE")"
+  fi
+fi
 
 echo "orchestrator finished: exit $code -> $OUTDIR/orchestrator.out"
 exit "$code"

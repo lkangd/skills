@@ -26,6 +26,21 @@ known-issues list to suppress (may be "none").
   verifier instead of exceeding the budget.
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
   enforce this — do not work around it.
+- **Checkpoint discipline**: your session can be killed at any moment (API error, quota
+  limit) and anything living only in your context dies with it. Every subagent result must
+  hit disk under `RUN_DIR/out/` the moment it arrives, before you reason about it or
+  dispatch anything else — Steps 2–4 name the exact files. A killed session with checkpoints
+  is resumable; one without them wastes the whole round.
+
+## Resuming (only when your launch prompt says RESUME)
+
+If your launch prompt marks this as a resume, the files under `RUN_DIR/` are authoritative
+prior work — never redo it. `prompts/<angle>.md` already concretized; each
+`out/candidates-<angle>.json` (or `candidates-<angle>-<slice>.json`) is that angle's
+completed reviewer output — treat the angle as dispatched and NEVER re-dispatch it;
+`out/verdicts-<n>.json` are completed verifier batches; `out/findings.json`, if present, is
+the final verified findings array — go straight to Step 4 and report from it. Start at the
+first step whose checkpoint is missing, with the remaining budget.
 
 ## Step 1 — Complete the review packet
 
@@ -58,6 +73,12 @@ in the same turn) — NEVER as a background task. You run in a headless session:
 tasks still pending when your turn ends are terminated wholesale, killing the reviewers
 mid-run and truncating the whole round. Parallelism comes from issuing multiple foreground
 dispatches in one message, not from backgrounding.
+
+**Checkpoint each result** — as each reviewer returns, write its JSON candidate array
+verbatim to `RUN_DIR/out/candidates-<angle>.json` (slices:
+`candidates-<angle>-<slice#>.json`) before dispatching more or analyzing the content. An
+angle that ran inline (fallback) or returned zero candidates still gets its file (`[]` when
+empty) — file presence is the "this angle is done" marker a resume relies on.
 
 **Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the packet's
 diff section exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
@@ -135,6 +156,9 @@ the packet path, and the following instructions **verbatim**:
 > decisive line). The keys and the three verdict words are machine-parsed ASCII protocol —
 > never translate them; the evidence text may be in any language.
 
+As each verifier returns, write its verdict array verbatim to `RUN_DIR/out/verdicts-<n>.json`
+(`n` = dispatch order) before dispatching more or applying the verdicts.
+
 **Keep CONFIRMED and PLAUSIBLE candidates; drop REFUTED ones.** A candidate whose verifier
 returned no verdict is dropped too — never promote an unverified candidate.
 
@@ -149,8 +173,11 @@ Step 3. Skip this step entirely in non-adversarial rounds or when the budget is 
 
 ## Step 4 — Final report (your entire final message)
 
-Your final message is: the marker line, the stats line, then exactly one fenced json code
-block holding the findings array — nothing else.
+First write the finished findings array to `RUN_DIR/out/findings.json` — the last checkpoint,
+so a report that dies in delivery can be replayed without re-verifying anything.
+
+Then your final message is: the marker line, the stats line, then exactly one fenced json
+code block holding the findings array — nothing else.
 
 ```
 CODE-REVIEW RESULT: <n> finding(s) survived verification.

@@ -107,3 +107,19 @@ Run artifacts (packets, prompts, reviewer output) go to `.code-review/runs/` —
 gitignore it. The directory sits at the repo root on purpose: anything under `.claude/` is
 covered by Claude Code's sensitive-file protection, which auto-denies the headless
 orchestrator's writes.
+
+## Crash resilience
+
+A review round is 10–40+ minutes of reviewer tokens; an API error in the last turn must not
+discard them. Three layers ensure it doesn't:
+
+- The orchestrator **checkpoints every subagent result** to `RUN_DIR/out/` the moment it
+  arrives (`candidates-<angle>.json`, `verdicts-<n>.json`, and the final `findings.json`) —
+  nothing important lives only in session context.
+- The launcher pins the orchestrator's `--session-id` (saved to `RUN_DIR/session-id`) and,
+  when the session dies without a parseable report, **auto-resumes it once** — the resumed
+  session continues at the first incomplete step instead of starting over.
+- `/code-review resume [<run-dir>]` re-enters a failed round later — e.g. after a usage-limit
+  reset, from a brand-new session. It resumes the original orchestrator session first; if
+  that transcript is unusable (e.g. it reproduces the fatal API error), it falls back to a
+  fresh salvage session that trusts the on-disk checkpoints and re-runs only what is missing.
