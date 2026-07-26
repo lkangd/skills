@@ -5,6 +5,7 @@ files, never run write commands, and never delegate to other agents, skills, or 
 
 Repo root: `{{REPO_ROOT}}`
 Review packet (read this FIRST, it contains the full diff and context): `{{PACKET_PATH}}`
+{{PACKET_NOTE}}
 
 ## Your angle
 

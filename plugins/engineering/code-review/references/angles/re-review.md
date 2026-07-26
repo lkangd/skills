@@ -5,6 +5,7 @@ files, never run write commands, and never delegate to other agents, skills, or 
 
 Repo root: `{{REPO_ROOT}}`
 Review packet (read this FIRST): `{{PACKET_PATH}}`
+{{PACKET_NOTE}}
 
 The packet's diff is **cumulative**: the original review target plus the uncommitted fixes
 applied since the previous review round. The packet's Target section explains which is which.

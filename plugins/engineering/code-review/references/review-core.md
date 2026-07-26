@@ -96,7 +96,10 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
 4. Read the result. The authoritative payload is **`RUN_DIR/out/findings.json`**: an array
    of finding objects (`severity`, `verdict`, `angle`, `title`, `file`, `line`, `evidence`,
    `why`, `suggestion`, `verdict_evidence`), already verified (verdict `CONFIRMED` or
-   `PLAUSIBLE`; refuted candidates were dropped inside the orchestrator).
+   `PLAUSIBLE`; refuted candidates were dropped inside the orchestrator). The array is
+   uncapped and ordered most severe first, correctness before cleanup at equal severity — a
+   thorough adversarial round on a large diff can return 30–40 findings, which is a working
+   list to triage in order, not a signal that something went wrong.
    `RUN_DIR/out/orchestrator.out` holds a two-line receipt (`CODE-REVIEW RESULT:` marker +
    stats); treat it as prose and survive its absence or translation. Fallback: if
    findings.json is missing or unparseable, use the **last fenced ```json block** in
@@ -146,15 +149,20 @@ substitutions:
   `git diff <args>` output, using the same `--diff-args` mapping as §3 — then continue with
   orchestrator.md Step 1's completion tasks (conventions, untracked files). Likewise
   concretize `RUN_DIR/prompts/<angle>.md` from the templates yourself (orchestrator.md
-  Step 2 assumes the launcher did it; in-session there is none).
+  Step 2 assumes the launcher did it; in-session there is none) — including
+  `{{PACKET_NOTE}}`: measure the packet and tell reviewers whether it fits in one `Read`
+  (the tool rejects anything over 25,000 tokens) or must be read in chunks, and at what
+  chunk size.
+- `scripts/findings.sh` works the same in-session: run `prepare` before verification and
+  `build` before reporting instead of doing that bookkeeping by hand.
 - Dispatch angle reviewers and verifiers via the `Agent` tool with
   `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
 - Choose the model per dispatch with the `model` parameter using tier aliases
   (opus = complex angles, sonnet = moderate angles and verifiers), matching the tier
   guidance in orchestrator.md. Aliases resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping
   automatically.
-- The orchestrator's budget caps (≤ 12 reviewers including large-diff splits, ≤ 10 verifiers,
-  total 22) apply unchanged.
+- The orchestrator's budget caps (≤ 12 reviewers including large-diff splits, plus the
+  Step 3.5 sweep, ≤ 10 verifiers, total 23) apply unchanged.
 - Then continue at §5 with the surviving (CONFIRMED / PLAUSIBLE) findings.
 
 ## §5 Verify findings and act
@@ -174,6 +182,11 @@ classify:
   `${CLAUDE_PLUGIN_ROOT}/references/backlog-template.md`. Glob the backlog dir first and update
   an existing entry instead of duplicating.
 - **Not confirmed** → record why the finding is wrong (you will report this; do not fix).
+
+Work the list in its given order and account for every entry — a long list is triaged, never
+truncated. When it runs long, the cheap move is to batch the tail: `minor`/`nit` cleanup
+findings that are real but not worth interrupting this change for go to the backlog together,
+one entry each, rather than being dropped or silently skipped. Say so in the report.
 
 Do not soften findings to avoid work, and do not "fix" things no reviewer flagged.
 

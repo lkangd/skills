@@ -39,6 +39,13 @@ process:
 > `modelUsage` keys must list one entry per tier. Session transcripts are not evidence — they
 > record the gateway's echoed model name, not what was requested.
 
+> **Inherited hooks caveat**: the orchestrator is a normal Claude Code session, so your
+> user-level `~/.claude/settings.json` hooks apply to it too. A `PreToolUse` hook that
+> rewrites or blocks Bash commands will fire on the orchestrator's own tooling — one observed
+> round lost three turns to a hook rejecting `jq --slurpfile` as dangerous. If a round stalls
+> on shell commands, check `RUN_DIR/out/orchestrator.err` and the hook's own logs before
+> suspecting the plugin.
+
 ## How a round works
 
 The current session never orchestrates. It resolves the review target, launches **one**
@@ -65,6 +72,13 @@ orchestrator session, and acts on the consolidated result.
      verifier → main session) is JSON with ASCII keys, so a non-English-tuned runner model
      cannot break the protocol by translating labels, and the findings JSON is generated
      once, never re-emitted through the model.
+
+   The bookkeeping between those steps — normalizing paths, numbering candidates, splitting
+   them into verifier batches, joining verdicts back on — is done by `scripts/findings.sh`,
+   not by the model. **findings.json is uncapped**: every candidate that survives
+   verification is reported, ordered most severe first. An earlier 12-finding cap (a leftover
+   from when findings were inlined in the final message) was observed discarding 2 critical
+   and 8 major verified findings in a single round.
 2. **Verify & act (back in the current session)**: the main agent re-confirms each surviving
    finding against the code. Confirmed and in scope → fixed now. Confirmed but pre-existing /
    too large → one file per issue in the backlog (default `docs/code-review-backlog/`,
@@ -87,8 +101,8 @@ descendant agents:
   layers.
 - Hard caps independent of model behavior: exactly one orchestrator process per round
   (the script builds the single orchestrator prompt itself from its flags), and inside it at
-  most 12 angle reviewers (large diffs split into file-group slices count against this) plus
-  at most 10 verifiers.
+  most 12 angle reviewers (large diffs split into file-group slices count against this),
+  one adversarial gap sweep, and at most 10 verifiers.
 - Reviewers always inspect the current working tree — never worktree isolation, which cannot
   see uncommitted changes.
 - All commands are `disable-model-invocation: true` — only the user can trigger them.

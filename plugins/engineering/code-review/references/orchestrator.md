@@ -21,16 +21,21 @@ known-issues list to suppress (may be "none").
 - Never invoke any skill or slash command (including any `/code-review` variant).
 - Never create, edit, or delete files outside `RUN_DIR`. Never stage, commit, or revert.
 - Dispatch subagents ONLY of the provided custom types `reviewer-deep`, `reviewer`, and
-  `verifier`. Budget: at most 12 angle reviewers (large-diff splits included), at most 10
-  verifiers, hard total 22. If candidate locations outnumber 10, batch several locations per
-  verifier instead of exceeding the budget.
+  `verifier`. Budget: at most 12 angle reviewers (large-diff splits included) plus the one
+  Step 3.5 sweep, at most 10 verifiers, hard total 23. The sweep is deliberately outside the
+  reviewer budget — an adversarial round fills all 12 reviewer slots with its angle list, and
+  a sweep that only runs on leftover budget never runs at all.
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
   enforce this — do not work around it.
 - **Checkpoint discipline**: your session can be killed at any moment (API error, quota
   limit) and anything living only in your context dies with it. Every subagent result must
   hit disk under `RUN_DIR/out/` the moment it arrives, before you reason about it or
-  dispatch anything else — Steps 2–4 name the exact files. A killed session with checkpoints
-  is resumable; one without them wastes the whole round.
+  dispatch anything else — Steps 2–4 name the exact files. Concretely: the message you send
+  immediately after a dispatch wave returns contains the checkpoint Writes and NOTHING else
+  — no analysis, no next dispatch, no commentary. (Observed: an orchestrator that reasoned
+  for five minutes first was killed by an API error in exactly that window, and only a
+  same-session resume saved twelve minutes of reviewer work.) A killed session with
+  checkpoints is resumable; one without them wastes the whole round.
 - **Token discipline**: every turn re-sends your entire accumulated context, so your cost is
   turns × context size. Batch ALL independent tool calls into a single message (all
   checkpoint Writes of a returning batch together, all dispatches of a wave together, the
@@ -48,6 +53,10 @@ completed reviewer output — treat the angle as dispatched and NEVER re-dispatc
 `out/verdicts-<n>.json` are completed verifier batches; `out/findings.json`, if present, is
 the final verified findings array — go straight to Step 4 and report from it. Start at the
 first step whose checkpoint is missing, with the remaining budget.
+
+Re-running `findings.sh prepare` is the cheapest way to see where verification stands: it
+preserves existing candidate numbering and finished batches, and prints exactly which
+`verify-input-<n>.json` files still need a verifier.
 
 ## Step 1 — Complete the review packet
 
@@ -69,10 +78,10 @@ requires judgment, batching the file reads each task needs into a single message
 ## Step 2 — Dispatch angle reviewers
 
 `RUN_DIR/prompts/<angle>.md` already exists for every angle this round — the launcher
-concretized the templates (packet path, repo root, known issues) at zero token cost. Never
-read the templates or rewrite these files; only if a prompt file is missing (launcher warned
-about an unknown angle) do you build that one yourself from
-`PLUGIN_ROOT/references/angles/<angle>.md`.
+concretized the templates (packet path, how to read the packet, repo root, known issues) at
+zero token cost, `sweep.md` included. Never read the templates or rewrite these files; only
+if a prompt file is missing (launcher warned about an unknown angle) do you build that one
+yourself from `PLUGIN_ROOT/references/angles/<angle>.md`.
 
 Dispatch one subagent per angle with the prompt:
 "Read and execute the instructions in <absolute path to the angle prompt file>."
@@ -124,24 +133,33 @@ ran inline. An angle covered inline beats an angle silently skipped.
 
 ## Step 3 — Verify every candidate
 
-Collect the JSON candidate arrays from the reviewers. If every array is empty, skip to
-Step 4.
+Normalizing paths, numbering candidates and splitting them into verifier batches is
+bookkeeping, not judgement — do NOT do it by hand. Once every angle's
+`out/candidates-*.json` exists, run one command:
 
-First **normalize paths**: rewrite each candidate's `file` to the repo-relative form exactly
-as listed in the packet's Changed files section (suffix-match; longest match wins), so
-grouping and the final report use one spelling per file.
+```
+PLUGIN_ROOT/scripts/findings.sh prepare --run-dir RUN_DIR
+```
 
-Then **dedup**: candidates that point at the same line AND the same mechanism are one
-candidate — keep the one with the most concrete failure scenario. Candidates at the same
-line for different reasons are distinct; keep both — never let one angle's conclusions
-suppress another's.
+It normalizes each `file` to the packet's spelling, numbers the candidates, writes
+`out/normalized-candidates.json` and the `out/verify-input-<n>.json` batches (≤12 candidates
+each, one file's candidates kept together), and prints the counts. If it reports "no
+candidates found", skip to Step 4.
 
-Then group the remaining candidates by location (`file:line`) and batch the location groups
-into as FEW `verifier` subagents (sonnet tier) as coverage allows — target 2–4 dispatches
-total, up to ~6 location groups per verifier; each verifier session re-pays the repo context,
-so many small verifiers waste tokens without adding independence (candidates are judged
-one by one regardless of batching). Give each verifier: the candidate objects verbatim
-(numbered `1`, `2`, …), the packet path, and the following instructions **verbatim**:
+Its only judgement call comes back to you: a **possible duplicates** list of candidates
+sitting within a few lines of each other in one file. Decide in one pass — candidates at the
+same place describing the SAME mechanism are one candidate (keep the most concrete failure
+scenario), candidates at the same place for DIFFERENT reasons are distinct and both stay;
+never let one angle's conclusions suppress another's. If any are true duplicates, re-run the
+command once with `--drop <indices of the weaker ones>` (indices are stable across re-runs);
+otherwise proceed. Nothing else about the prepared files needs your attention — never
+rewrite them, and never retype candidate objects into your own context.
+
+Then dispatch one `verifier` subagent (sonnet tier) per `verify-input-<n>.json`. Each
+verifier session re-pays the repo context, so batches are sized to keep the dispatch count
+low; do not split them further. Give each verifier: the path of its batch file (the
+candidate objects carry their `index`), the packet path, and the following instructions
+**verbatim**:
 
 > Investigate each candidate against the actual code and return one verdict per candidate.
 > Judge each candidate independently on its own claim. The verdicts:
@@ -170,25 +188,47 @@ one by one regardless of batching). Give each verifier: the candidate objects ve
 > never translate them; the evidence text may be in any language.
 
 As each verifier returns, write its verdict array verbatim to `RUN_DIR/out/verdicts-<n>.json`
-(`n` = dispatch order) before dispatching more or applying the verdicts.
+(`n` = the batch number it verified) in a message containing nothing but those Writes.
 
-**Keep CONFIRMED and PLAUSIBLE candidates; drop REFUTED ones.** A candidate whose verifier
-returned no verdict is dropped too — never promote an unverified candidate.
+Do not apply the verdicts yourself — Step 4's command joins them onto the candidates, keeps
+CONFIRMED and PLAUSIBLE, and drops both REFUTED candidates and any candidate no verifier
+ruled on (an unverified candidate is never promoted).
 
 ## Step 3.5 — Sweep for gaps (only when the angle list includes `design`)
 
-Adversarial rounds get one extra pass hunting only for what the first wave missed. Write
-`RUN_DIR/prompts/sweep.md` from `PLUGIN_ROOT/references/angles/sweep.md`, filling
-`{{VERIFIED_FINDINGS}}` with one line per surviving candidate (`<file>:<line> — <title>`, or
-"none"). Dispatch it once (`reviewer-deep`, opus tier — counts against the reviewer budget),
-then normalize, dedup against the existing list, and verify its candidates exactly as in
-Step 3. Skip this step entirely in non-adversarial rounds or when the budget is exhausted.
+Adversarial rounds get one extra pass hunting only for what the first wave missed.
+`RUN_DIR/prompts/sweep.md` is pre-built like the other angle prompts except for one
+placeholder: replace `{{VERIFIED_FINDINGS}}` with one line per surviving candidate
+(`<file>:<line> — <title>`, or "none") and change nothing else in the file. Dispatch it once
+(`reviewer-deep`, opus tier), checkpoint its result to
+`out/candidates-sweep.json`, then re-run `findings.sh prepare` (it picks the new file up
+automatically and renumbers everything) and verify the batches that changed exactly as in
+Step 3. This dispatch sits outside the 12-reviewer budget: skip it only in non-adversarial
+rounds, never for budget reasons.
 
 ## Step 4 — Final report
 
-Write the finished findings array to `RUN_DIR/out/findings.json` — this FILE is the
-authoritative payload the launching session parses, as well as the last resume checkpoint.
-One object per finding:
+Build the findings file with one command — never assemble, retype or hand-pick it:
+
+```
+PLUGIN_ROOT/scripts/findings.sh build --run-dir RUN_DIR
+```
+
+It joins the verdicts onto the candidates, drops REFUTED and unverified ones, orders the
+survivors (most severe first, correctness before cleanup at equal severity) and writes
+`RUN_DIR/out/findings.json` — the authoritative payload the launching session parses and the
+last resume checkpoint. It prints the counts your stats line needs, including a per-class
+refutation breakdown: cleanup candidates are near-tautologically CONFIRMED once the duplicate
+is real, so only the bug-angle refutation rate says anything about whether verification is
+falsifying anything.
+
+**Report every finding that survived — there is no cap.** The old 12-object limit existed
+only because findings were once inlined in the final message; findings.json is a file, so
+truncating it just destroys verified work. (Observed: a round reported 12 of 38 survivors and
+silently discarded 2 critical and 8 major findings, which the next round then had to
+rediscover.) Ordering, not omission, is what keeps a long list usable.
+
+Each object the command writes:
 
 ```json
 [
@@ -207,16 +247,14 @@ One object per finding:
 ]
 ```
 
-Order the array most severe first; correctness findings outrank cleanup/altitude/conventions
-findings of equal severity. At most 12 objects — if more survive, keep the 12 most severe and
-note the overflow in the stats line with `; <n> further minor/nit findings dropped for
-space`. Nothing survived = write `[]`.
+Nothing survived = the command writes `[]`; that is a valid result, not a failure.
 
-Then your final message is exactly two lines and nothing else:
+Then your final message is exactly two lines and nothing else — fill the counts in from the
+command's `STATS:` and `BY CLASS:` output, never from your own recollection:
 
 ```
 CODE-REVIEW RESULT: <n> finding(s) survived verification. Findings: <absolute path of findings.json>
-(reviewed: <one-line target description>; angles: <list>; candidates: <m> raw, <k> verified, <r> refuted)
+(reviewed: <one-line target description>; angles: <list>; candidates: <m> raw, <k> verified, <r> refuted; bug-angle <b> raw/<br> refuted, cleanup <c> raw/<cr> refuted)
 ```
 
 Do NOT repeat the findings JSON in the final message — the file already carries it, and
