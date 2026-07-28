@@ -21,8 +21,9 @@ known-issues list to suppress (may be "none").
 - Never invoke any skill or slash command (including any `/code-review` variant).
 - Never create, edit, or delete files outside `RUN_DIR`. Never stage, commit, or revert.
 - Dispatch subagents ONLY of the provided custom types `reviewer-deep`, `reviewer`, and
-  `verifier`. Budget: at most 12 angle reviewers (large-diff splits included) plus the one
-  Step 3.5 sweep, at most 10 verifiers, hard total 23. The sweep is deliberately outside the
+  `verifier`. Budget: at most 13 angle reviewers (large-diff splits and the optional `spec`
+  angle included) plus the one Step 3.5 sweep, at most 10 verifiers, hard total 24. The
+  sweep is deliberately outside the
   reviewer budget — an adversarial round fills all 12 reviewer slots with its angle list, and
   a sweep that only runs on leftover budget never runs at all.
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
@@ -66,11 +67,14 @@ list, the known-issues list (when present), and the full unified diff (also avai
 Sanity-check it with one compound Bash call (`wc -l` + `head`), then complete it with what
 requires judgment, batching the file reads each task needs into a single message:
 
-1. **Project conventions**: the root `CLAUDE.md` (if any) and every `CLAUDE.md` in directories
-   the diff touches, trimmed to sections that could apply. Write the excerpts (with a
-   `## Project conventions` heading and per-file paths) to `RUN_DIR/conventions-excerpt.md`,
+1. **Project conventions**: every place this repo documents how code should be written — the
+   root `CLAUDE.md` (if any) and every `CLAUDE.md` in directories the diff touches, plus
+   root-level standards documents when they exist (`CONTRIBUTING.md`, `CODING_STANDARDS.md`,
+   `CODE_STYLE.md`, a style guide under `docs/` — check cheaply with one `ls`/Glob, do not
+   dredge) — each trimmed to sections that could apply to the diff. Write the excerpts (with
+   a `## Project conventions` heading and per-file paths) to `RUN_DIR/conventions-excerpt.md`,
    then append with `cat RUN_DIR/conventions-excerpt.md >> RUN_DIR/packet.md`. Skip entirely
-   when no `CLAUDE.md` applies.
+   when no such document applies.
 2. **Untracked files** (working-tree and file-list targets only): the diff cannot contain
    them — append the full content of untracked files from `git status --porcelain` the same
    way (cap each at ~400 lines, note truncation).
@@ -110,8 +114,8 @@ the reviewer budget — merge slices rather than exceed it.
 resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping automatically):
 
 - `reviewer-deep` (opus tier) — use when the angle must reason hard: `correctness`,
-  `removed-behavior`, `pitfalls`, `wrapper`, `design`, or `re-review` on a non-trivial
-  change, or any angle when the diff is large or touches concurrency/state
+  `removed-behavior`, `pitfalls`, `wrapper`, `design`, `spec`, or `re-review` on a
+  non-trivial change, or any angle when the diff is large or touches concurrency/state
   machines/security-sensitive code.
 - `reviewer` (sonnet tier) — use for moderate work: `callers`, `conventions`, and the cleanup
   angles (`reuse`, `simplification`, `efficiency`, `altitude`) on typical changes, or any
@@ -169,17 +173,26 @@ candidate objects carry their `index`), the packet path, and the following instr
 >   duplicate, the wasted work, the quoted CLAUDE.md rule) is real and the suggestion works.
 > - PLAUSIBLE — the mechanism is real but the trigger is uncertain (timing, environment,
 >   config). State what would confirm it.
-> - REFUTED — factually wrong (the code doesn't say that), or guarded elsewhere. Quote the
->   line that proves it.
+> - REFUTED — factually wrong (the code doesn't say that), guarded elsewhere, the flagged
+>   pattern is explicitly endorsed or mandated by the project's documented conventions in the
+>   packet (a documented repo standard overrides any general heuristic — quote the rule), or
+>   the claimed defect IS behavior the packet's Target or Spec section declares as required
+>   (quote the requirement) — intended behavior is not a defect. That last rule covers only
+>   the required behavior itself: a candidate naming an unhandled consequence of it (a stale
+>   reference left behind, an invariant lost that no requirement supersedes) is judged on
+>   that consequence, not refuted. Quote the line that proves it.
 >
 > PLAUSIBLE is the default — do NOT refute a candidate for being "speculative" or "depends on
 > runtime state" when the state is realistic: concurrency races, nil/undefined on a
 > rare-but-reachable path (error handler, cold cache, missing optional field), falsy-zero
 > treated as missing, off-by-one on a boundary the code does not exclude, retry storms and
 > partial failures, a regex/allowlist that lost an anchor. REFUTED requires evidence
-> constructible from the code: factually wrong (quote the actual line); provably impossible
-> (type/constant/invariant — show it); already handled in this diff (cite the guard); or pure
-> style with no observable effect.
+> constructible from the code or the packet: factually wrong (quote the actual line);
+> provably impossible (type/constant/invariant — show it); already handled in this diff
+> (cite the guard); explicitly endorsed by a documented project convention in the packet
+> (quote the rule); declared as required behavior by the packet's Target or Spec section
+> (quote the requirement — but this never refutes a consequence the requirement does not
+> cover); or pure style with no observable effect.
 >
 > Your entire reply must be exactly one fenced json code block: an array with one object per
 > candidate, each having the keys `index` (the candidate's number), `verdict` (exactly one of

@@ -22,7 +22,9 @@ Check that each change is implemented at the right depth, not as a fragile banda
 
 Every finding must name the deeper place the change belongs and why the current altitude will
 cost more later. This is not a bug hunt and not bikeshedding: only raise a candidate when the
-misplacement is concrete, not a matter of taste.
+misplacement is concrete, not a matter of taste. A placement the packet's documented project
+conventions explicitly mandate is out of scope — a documented repo standard overrides this
+angle's heuristics.
 
 ## Output format (mandatory)
 

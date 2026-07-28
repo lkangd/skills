@@ -11,12 +11,28 @@ fixes what is real, files what must wait, and reports.
 
 | command | what it does |
 |---|---|
-| `/code-review <target> [-c=N]` | One review round: 8 parallel reviewer angles (line-by-line correctness, removed-behavior audit, cross-file callers, reuse, simplification, efficiency, altitude, CLAUDE.md conventions) → independent verifiers confirm/refute each candidate → main agent re-verifies → fixes confirmed in-scope issues, backlogs deferred ones, rejects false positives with reasons. |
+| `/code-review <target> [-c=N] [--spec=<path>,...]` | One review round: 8 parallel reviewer angles (line-by-line correctness, removed-behavior audit, cross-file callers, reuse, simplification, efficiency, altitude, documented conventions — CLAUDE.md, CONTRIBUTING, coding standards) plus an optional spec-conformance angle when a spec source is resolved → independent verifiers confirm/refute each candidate → main agent re-verifies → fixes confirmed in-scope issues, backlogs deferred ones, rejects false positives with reasons. |
 | `/code-review:adversarial <target> [-c=N] [--max-rounds=N]` | The same round 1 plus three deep angles (design/assumption challenge, language-pitfall specialist, wrapper/proxy correctness) and a post-verification gap sweep, then loops: fix → single re-review of the cumulative diff → fix … until a round yields no confirmed major/critical findings or `max_rounds` (default 3) is hit. |
 | `/code-review:setup` | Interactive per-project configuration, written to `.claude/code-review.local.md`. Runs automatically on first use. |
 
 The **review target** is always explicit — a commit sha or range, `staged`, `working-tree`,
 file paths, or `branch <base>`. With no target the command asks; it never guesses.
+
+**Spec conformance** is an optional extra angle: given one or more spec documents (issue,
+PRD, plan — multiple at once are supported), a dedicated reviewer checks the diff against
+them for missing/partial requirements, scope creep, and requirements implemented with
+contradicting behavior, quoting the spec line per finding. Spec sources resolve in order:
+explicit `--spec=<path>[,<path>…]` → documents already in the invoking session's context
+(the usual case when reviewing from the session that wrote the code) → one question with
+**no spec** as the default and a free-text option to paste path(s). With no source the
+angle is skipped and the report says so.
+
+Requirement-declared behavior is suppressed **inside** the pipeline, not rejected after the
+fact: reviewers and the verifier treat behavior the packet's Target or Spec section declares
+as required as intended — never a finding in itself — while its unhandled consequences (a
+stale caller left behind, an invariant lost that no requirement supersedes) still surface.
+Without this, a deliberate module removal comes back as a confirmed "removed route with no
+replacement" finding that the main session must reject by hand.
 
 ## Cross-model review (the point)
 
@@ -101,8 +117,8 @@ descendant agents:
   layers.
 - Hard caps independent of model behavior: exactly one orchestrator process per round
   (the script builds the single orchestrator prompt itself from its flags), and inside it at
-  most 12 angle reviewers (large diffs split into file-group slices count against this),
-  one adversarial gap sweep, and at most 10 verifiers.
+  most 13 angle reviewers (large diffs split into file-group slices and the optional spec
+  angle count against this), one adversarial gap sweep, and at most 10 verifiers.
 - Reviewers always inspect the current working tree — never worktree isolation, which cannot
   see uncommitted changes.
 - All commands are `disable-model-invocation: true` — only the user can trigger them.

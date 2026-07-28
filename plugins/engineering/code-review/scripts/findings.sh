@@ -55,7 +55,7 @@ def lineof:
 
 def isbug:
   . as $a
-  | ["correctness","removed-behavior","callers","pitfalls","wrapper","design","re-review","sweep"]
+  | ["correctness","removed-behavior","callers","pitfalls","wrapper","design","spec","re-review","sweep"]
   | index($a) != null;
 
 # Most severe first, bug-hunting angles ahead of cleanup at equal severity, then file/line.

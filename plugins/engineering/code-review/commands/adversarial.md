@@ -1,6 +1,6 @@
 ---
 description: Adversarial review loop - review, fix, re-review until clean or max rounds
-argument-hint: <review-target> [-c=N] [--max-rounds=N]
+argument-hint: <review-target> [-c=N] [--max-rounds=N] [--spec=<path>,...]
 disable-model-invocation: true
 allowed-tools:
   - Bash(bash:*)
@@ -30,6 +30,8 @@ Raw arguments: `$ARGUMENTS`
 
 - `-c=N` → concurrency override for this run.
 - `--max-rounds=N` → loop cap override (config default: 3).
+- `--spec=<path>[,<path>…]` → spec document(s) to review the change against (review-core.md
+  §2.5; without the flag, spec sources are resolved from session context or by asking).
 - Everything else is the **review target** (审查内容): commit sha(s) or range, `staged`,
   `working-tree`, file paths, `branch <base>`, or a description that maps to one of these.
   If empty, you will ask — never assume a default.
@@ -42,9 +44,11 @@ collection, reviewer dispatch, and finding verification, and hands you a consoli
 
 1. Safety rules (§0), load config (§1) — run setup first if `.claude/code-review.local.md` is
    missing.
-2. Resolve the review target (§2).
+2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
+   else specs already in this session's context, else ask (default: no spec).
 3. **Round 1**: launch ONE orchestrator with angles
    `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions, design, pitfalls, wrapper`
+   — plus `spec` (with one `--spec-file` per document) when §2.5 resolved spec sources —
    (§3) — the orchestrator also runs a post-verification gap sweep in this mode — or execute
    the orchestrator procedure yourself if config says `runner: in-session` (§4). Then verify
    the surviving (CONFIRMED / PLAUSIBLE) findings and fix / backlog / reject per §5.
@@ -56,4 +60,4 @@ collection, reviewer dispatch, and finding verification, and hands you a consoli
    anything.
 
 Budget invariant: exactly one orchestrator launch per round. All reviewer/verifier fan-out
-happens inside the orchestrator under its own caps (≤ 12 reviewers, ≤ 10 verifiers).
+happens inside the orchestrator under its own caps (≤ 13 reviewers, ≤ 10 verifiers).

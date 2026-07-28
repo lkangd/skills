@@ -1,6 +1,6 @@
 ---
 description: Review a target (commits, staged, working tree, files), verify findings, fix confirmed issues
-argument-hint: <review-target> [-c=N] | resume [<run-dir>]
+argument-hint: <review-target> [-c=N] [--spec=<path>,...] | resume [<run-dir>]
 disable-model-invocation: true
 allowed-tools:
   - Bash(bash:*)
@@ -29,6 +29,8 @@ run any tool.
 Raw arguments: `$ARGUMENTS`
 
 - `-c=N` → concurrency override for this run.
+- `--spec=<path>[,<path>…]` → spec document(s) to review the change against (review-core.md
+  §2.5; without the flag, spec sources are resolved from session context or by asking).
 - `resume [<run-dir>]` → do not start a new review: resume a previously failed round per
   review-core.md §3 "Resuming a failed round". With no run-dir, locate the newest
   `.code-review/runs/*/round-*` without a usable result (no non-empty `out/findings.json`,
@@ -47,9 +49,11 @@ consolidated report:
 
 1. Safety rules (§0), load config (§1) — run setup first if `.claude/code-review.local.md` is
    missing.
-2. Resolve the review target (§2).
+2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
+   else specs already in this session's context, else ask (default: no spec).
 3. Launch ONE orchestrator via the bundled script with angles
    `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions`
+   — plus `spec` (with one `--spec-file` per document) when §2.5 resolved spec sources —
    (§3), or execute the orchestrator procedure yourself if config says `runner: in-session`
    (§4). Wait for the consolidated, verified (CONFIRMED / PLAUSIBLE) findings.
 4. Verify every surviving finding against the code, then fix / backlog / reject per §5.

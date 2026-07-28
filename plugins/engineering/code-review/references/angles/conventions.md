@@ -12,8 +12,10 @@ Review packet (read this FIRST, it contains the full diff and the project's conv
 
 Check the diff against the project's stated conventions:
 
-- The `CLAUDE.md` excerpts included in the packet. Only flag a violation if the convention
-  file **explicitly** states the rule — do not infer rules that are not written down.
+- The documented-standards excerpts included in the packet — `CLAUDE.md`, and repo standards
+  documents such as `CONTRIBUTING.md`, `CODING_STANDARDS.md`, or a style guide. Only flag a
+  violation if the convention file **explicitly** states the rule — do not infer rules that
+  are not written down. Cite the document and the rule.
 - Contracts stated in code comments of the modified files (e.g. "must be called with lock
   held", "keep in sync with X"): verify the change honors them. Read the touched files in the
   repo to see these comments in full.

@@ -16,7 +16,9 @@ two functions in the same diff with verbatim or near-verbatim bodies count. For 
 candidate, name the existing helper (or the shared form) to call instead.
 
 Explicitly out of scope: reuse that would couple unrelated modules just to save a few lines,
-and helpers whose semantics only superficially match.
+helpers whose semantics only superficially match, and duplication the packet's documented
+project conventions explicitly endorse (a documented repo standard overrides this angle's
+heuristics).
 
 ## Output format (mandatory)
 

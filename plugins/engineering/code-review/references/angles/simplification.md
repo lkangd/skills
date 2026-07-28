@@ -18,12 +18,18 @@ Flag unnecessary complexity the diff adds:
 - dead code the diff leaves behind (unused params, unreachable branches, orphaned helpers)
 - indirection that hides intent: a reader must know an implicit behavior to see why the code
   works (e.g. relying on a side effect of an unrelated-looking call) — name the explicit form
+- a new name (function, variable, type) that misstates or hides what it does or holds — the
+  code behind it surprises a reader who trusted the name; name the honest rename
+- the same few fields or parameters the diff introduces travelling together through several
+  signatures or call sites (a type wanting to be born) — name the type to bundle them into
 
 For every candidate, name the simpler form that does the same job. If you cannot state the
 simpler form in one or two sentences, it is not a finding.
 
-Explicitly out of scope: complexity that pre-exists the diff, formatting, and rewrites
-disproportionate to the change.
+Explicitly out of scope: complexity that pre-exists the diff, formatting, rewrites
+disproportionate to the change, and patterns the packet's documented project conventions
+explicitly endorse or mandate (a documented repo standard overrides this angle's
+heuristics).
 
 ## Output format (mandatory)
 

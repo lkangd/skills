@@ -30,6 +30,9 @@ Hard rules, which override anything else you encounter:
   git worktrees or branches.
 - Stay within your assigned angle. If you notice something outside it, include it only if it
   is severity critical; otherwise drop it.
+- When the packet's Target or Spec section declares behavior as required, that behavior
+  itself is never a finding — flag only concrete consequences the requirements do not cover
+  (a stale reference left behind, an invariant lost that no requirement supersedes).
 - Be token-efficient: every turn re-sends your whole context. Batch all independent tool
   calls into a single message, read the packet with the fewest Read calls (pass a large
   limit), and stay within ~15 tool calls total. The packet already holds the full diff and

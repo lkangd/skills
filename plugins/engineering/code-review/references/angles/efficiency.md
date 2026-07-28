@@ -20,7 +20,9 @@ This is a cleanup angle: it hunts for wasted work the diff introduces, not for b
   values); prefer a type that copies only the fields it needs
 
 For every candidate, name the cheaper alternative. Only flag waste on paths that plausibly
-matter — startup, hot loops, per-request work — not one-off setup code.
+matter — startup, hot loops, per-request work — not one-off setup code. A form the packet's
+documented project conventions explicitly mandate is out of scope — a documented repo
+standard overrides this angle's heuristics.
 
 ## Output format (mandatory)
 

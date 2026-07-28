@@ -44,7 +44,8 @@ Read `.claude/code-review.local.md` in the project root. Its YAML frontmatter:
 | `backlog_dir` | `docs/code-review-backlog` | Where deferred findings are filed. |
 
 If the file does not exist, run the setup flow from `commands/setup.md` first, then continue.
-Flags override config for this run only: `-c=N` → concurrency, `--max-rounds=N` (adversarial).
+Flags override config for this run only: `-c=N` → concurrency, `--max-rounds=N` (adversarial),
+`--spec=<path>[,<path>…]` → explicit spec documents (§2.5).
 
 ## §2 Resolve the review target
 
@@ -55,6 +56,29 @@ of these).
 If no target was given, do NOT pick one silently. Gather candidates cheaply
 (`git log --oneline -3`, `git status --short`, `git diff --cached --stat | tail -1`) and use
 `AskUserQuestion` to let the user choose.
+
+## §2.5 Resolve the spec sources
+
+The optional `spec` angle checks the change against what it was supposed to implement —
+missing/partial requirements, scope creep, requirements implemented with contradicting
+behavior. It needs one or more **spec documents** (issue text, PRD, plan, design doc).
+Resolve them in this order; several documents at once are normal:
+
+1. **Explicit flag**: every path from `--spec=<path>[,<path>…]`. Use them as-is.
+2. **This session's context**: the review is often invoked from the same conversation that
+   produced the change — if that context already contains the requirements (a plan you wrote,
+   an issue or PRD the user pasted, a spec file you worked from), use them directly: collect
+   the file paths, and write any requirements that exist only in conversation context to
+   `RUN_DIR/spec-context.md` (create `RUN_DIR` first as in §3 step 1) and include that path.
+   Only use requirements that actually governed this change — do not reconstruct a spec from
+   your own guesses.
+3. **Ask**: otherwise use one `AskUserQuestion` — "Review against a spec?" with options
+   **"No spec — code-quality review only" (default, first)** and **"Provide spec document
+   path(s)"**; the user supplies one or more paths (comma- or space-separated) via the
+   option's free text. Verify each path exists before use.
+
+With no spec source, omit the `spec` angle from the round and say so in the report (§7) —
+never fabricate a spec, and never block the review on one.
 
 ## §3 Launch the orchestrator (external mode)
 
@@ -77,8 +101,15 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
      --diff-args "<arguments for git diff that produce the target's diff>" \
      --angles "<this round's angle list>" \
      --concurrency <resolved concurrency> \
+     [--spec-file "<path>"]...                         # one flag per spec document (§2.5)
      [--known-issues-file "RUN_DIR/known-issues.md"]   # round 2+ only
    ```
+   `--target` should state, beyond identifying the diff, any behavior the user or the
+   requirements explicitly declared as intended (deliberate removals, accepted tradeoffs,
+   a mandated approach) — reviewers and verifiers treat declared-intended behavior as
+   not-a-defect and judge only its unhandled consequences. This is what keeps "you deleted
+   X" findings from surfacing when deleting X was the task, even when no spec document
+   was resolved.
    `--diff-args` by target type — single commit `X`: `X^..X`; commit range `A..B`: `A^..B`;
    staged: `--cached`; working tree: `HEAD`; files: `HEAD -- <paths>`; branch:
    `<base>...HEAD`.
@@ -87,8 +118,10 @@ If no target was given, do NOT pick one silently. Gather candidates cheaply
    `/code-review` round 1:
    `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions`;
    `/code-review:adversarial` round 1: those plus `design, pitfalls, wrapper` (the presence
-   of `design` also makes the orchestrator run a post-verification gap sweep); any round 2+:
-   `re-review` only.
+   of `design` also makes the orchestrator run a post-verification gap sweep); when §2.5
+   resolved spec sources, append `spec` to the round-1 list and pass one `--spec-file` per
+   document; any round 2+: `re-review` only — still pass the same `--spec-file` flags so the
+   re-reviewer keeps the requirements as context.
    The script builds the orchestrator prompt AND the diff packet itself (fails fast on a bad
    diff spec) — never read or fill `references/orchestrator.md` in this session. It also
    enforces the `CODE_REVIEW_CHILD` sentinel and injects the read-only
@@ -145,7 +178,12 @@ substitutions:
 - The "launch parameters" that document references are the values you resolved in §1–§2;
   create `RUN_DIR` yourself as in §3 step 1.
 - No launcher pre-builds the packet in-session: write `RUN_DIR/packet.md` yourself first —
-  target description, `git diff <args> --stat` list, known issues (round 2+), and the full
+  target description (stating declared-intended behavior, as §3 requires of `--target`),
+  `git diff <args> --stat` list, known issues (round 2+), the spec documents from §2.5 (a
+  `## Spec` section with one `### Spec document: <path>` block per document, before the
+  diff, opening with the same intended-behavior note the launcher writes — required
+  behavior is intended, only its uncovered consequences are findings; omit the section when
+  there is no spec), and the full
   `git diff <args>` output, using the same `--diff-args` mapping as §3 — then continue with
   orchestrator.md Step 1's completion tasks (conventions, untracked files). Likewise
   concretize `RUN_DIR/prompts/<angle>.md` from the templates yourself (orchestrator.md
@@ -161,8 +199,8 @@ substitutions:
   (opus = complex angles, sonnet = moderate angles and verifiers), matching the tier
   guidance in orchestrator.md. Aliases resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping
   automatically.
-- The orchestrator's budget caps (≤ 12 reviewers including large-diff splits, plus the
-  Step 3.5 sweep, ≤ 10 verifiers, total 23) apply unchanged.
+- The orchestrator's budget caps (≤ 13 reviewers including large-diff splits and the
+  optional `spec` angle, plus the Step 3.5 sweep, ≤ 10 verifiers, total 24) apply unchanged.
 - Then continue at §5 with the surviving (CONFIRMED / PLAUSIBLE) findings.
 
 ## §5 Verify findings and act
@@ -210,6 +248,8 @@ End with a single consolidated report:
 - Per finding: severity, orchestrator verdict (CONFIRMED/PLAUSIBLE), `file:line`, angle,
   disposition (**fixed** / **backlogged** with file path / **rejected** with one-line
   reason).
+- Spec: which spec documents the round reviewed against, or one line that the spec angle
+  was skipped because no spec source was resolved (§2.5).
 - Adversarial: rounds executed and why the loop stopped.
 - Paths: `RUN_DIR` and any backlog files written.
 - Remind the user that nothing was committed.
