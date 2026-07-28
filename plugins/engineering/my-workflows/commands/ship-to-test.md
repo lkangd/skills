@@ -30,6 +30,7 @@ allowed-tools:
 - 严格按步骤 1 → 5 顺序执行，前一步成功后才能进入下一步。
 - 任何一步失败且无法自动恢复时：停下来，向用户说明失败原因和建议操作，等待用户确认处理完毕后，从失败的那一步继续，不要从头重跑。
 - 所有 yunke-cli 命令的参数（`app_branch_id`、`repositories`、`audit_user`、`product_id`、`env_code`）必须来自前置查询的实际返回值；重试时必须原样复用，禁止推断、变形或更换新值。
+- 所有 yunke-cli 查询类命令必须通过包装脚本 `${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-query.js` 执行。脚本内部调用 yunke-cli 并只输出精简 JSON（原始返回体很大，禁止直接调用原始查询命令）；脚本退出码 2 表示未匹配到目标，需要让用户介入确认。
 
 ## 步骤 1：提交变更
 
@@ -61,39 +62,48 @@ npm install -g @yunke/yunke-cli@latest --registry https://registry-npm.myscrm.cn
 
 - 确定分支：当前分支必须以 `dev-f` 开头，是则直接使用；否则停下来让用户确认要用哪个 dev 分支。目标 f 分支 = dev 分支名去掉 `dev-` 前缀（如 `dev-f-20260522-tiktok-mvp` → `f-20260522-tiktok-mvp`）。
 
-### 3.1 查询链路（顺序执行，参数取自上一步返回）
+### 3.1 查询链路（顺序执行，参数取自上一步返回，全部通过包装脚本）
 
-1. **查询分支状态**（`--branch_name` 使用目标 f 分支名作为关键字）：
-
-```bash
-yunke-cli devops mars-branch-query-branch-status --branch_name <f分支名>
-```
-
-   从返回中提取 `app_branch_id`、`product_id`、当前状态。若匹配到多个候选，列出让用户选择。
-
-2. **查询可建 MR 的仓库**：
+1. **查询分支状态并确定接测目标**（参数为目标 f 分支名和当前项目目录名，目录名取当前工作目录的 basename）：
 
 ```bash
-yunke-cli devops mars-branch-query-repositories --app_branch_id <上一步返回的id>
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-query.js" branch-status <f分支名> <项目目录名>
 ```
 
-   只有一个仓库时默认选择；多个仓库时让用户单选或多选。
+   返回 `branch_id`、`app_branch_id`、`app_name` 和 `deploy_targets`（即 `env_code` 含 `test` 且 `app_name` 能被项目目录名包含的全部环境，这些就是步骤 5 的接测目标）。若返回 `matched: false`，向用户展示 `candidate_apps` 让用户确认目标应用后再继续。
 
-3. **确定审核人**：
+2. **查询可建 MR 的仓库与 service_name**：
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-query.js" repositories <app_branch_id>
+```
+
+   只有一个仓库时默认选择；多个仓库时让用户单选或多选。返回中的 `service_name`（仓库 URL 最后一段路径名）供下一步使用。
+
+3. **通过 service_name 查询应用，获取 product_id**：
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-query.js" applications <service_name>
+```
+
+   从返回 `items` 中取 `product_id`；若返回多个应用，让用户确认。
+
+4. **确定审核人**：
    - 审核人记忆文件为 `~/.yunke-cli/my-workflow-reviewers.json`，结构为 `{ "<origin远程地址>": { "audit_user": "...", "name": "..." } }`。该文件在工作目录之外，必须使用 Read / Write 文件工具读写，禁止用 `cat` 等 shell 命令访问；文件不存在时视为空对象 `{}`。
-   - 若用户通过 `$ARGUMENTS` 指定了审核人：查询用户列表并用它匹配，能唯一匹配就直接使用，无需再选。
+   - 若用户通过 `$ARGUMENTS` 指定了审核人：将其作为 `keyword` 查询，能唯一匹配就直接使用，无需再选。
    - 若未指定且记忆文件中存在本项目（以 Context 中的 origin 远程地址为 key）的记录：直接使用记录的审核人。
-   - 否则查询用户列表并让用户选择：
+   - 否则查询用户列表（不带 keyword 为全量）并让用户选择：
 
 ```bash
-yunke-cli devops mars-branch-query-branch-users --product_id <前置返回的id> --ignore_app_members true
+node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-query.js" users <product_id> [keyword]
 ```
 
+   - `--audit_user` 使用返回中的 `user_name` 字段。
    - 最终确定的审核人写回记忆文件（不存在则创建目录和文件），供本项目下次直接使用。
 
 ### 3.2 创建 MR
 
-执行前向用户展示：`app_branch_id`、仓库列表、审核人，用户确认后执行：
+执行前向用户展示：`app_branch_id`、仓库列表、审核人、接测目标（`deploy_targets`），用户确认后执行：
 
 ```bash
 yunke-cli devops mars-branch-create-merge-request \
@@ -124,19 +134,14 @@ curl -sS -X PUT \
 
 ## 步骤 5：部署 f 分支接测
 
-1. 查询可部署环境并列出，让用户选择目标测试环境的 `env_code`：
+1. 接测目标为步骤 3 分支状态查询返回的 `deploy_targets`（全部目标都要部署，无需让用户选择环境）。执行前向用户列出这些目标（`env_code`、`env_name`、当前 `pipeline_status`）。
+2. 对每一个接测目标执行部署（`app_branch_id` 与 `env_code` 均复用步骤 3 的返回值）：
 
 ```bash
-yunke-cli devops mars-branch-query-environments --product_id <步骤3返回的id>
+yunke-cli devops mars-branch-deploy-branch --app_branch_id <id> --env_code <目标env_code>
 ```
 
-2. 使用用户选定的环境执行部署（`app_branch_id` 复用步骤 3 的值）：
-
-```bash
-yunke-cli devops mars-branch-deploy-branch --app_branch_id <id> --env_code <用户选择的code>
-```
-
-3. **将部署命令的完整调用结果原样打印给用户**，并附一句部署结果摘要；若失败，指出关键失败信息与建议的下一步。
+3. **将每次部署命令的完整调用结果原样打印给用户**，并附部署结果摘要；若失败，指出关键失败信息与建议的下一步。
 
 ## Report
 
@@ -144,4 +149,4 @@ yunke-cli devops mars-branch-deploy-branch --app_branch_id <id> --env_code <用�
 
 1. 提交的 commit 信息与 push 结果。
 2. 创建并已合并的 MR 链接。
-3. 部署的目标环境与部署触发结果。
+3. 每个接测目标环境与对应的部署触发结果。

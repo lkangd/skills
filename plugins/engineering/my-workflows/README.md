@@ -118,9 +118,9 @@ Ships the current `dev-f` branch changes all the way to the test environment:
 
 1. Commits current changes (inlined commit rules, no `Co-Authored-By`).
 2. Runs `git pull --rebase` then `git push`; pauses for the user on unresolvable conflicts.
-3. Creates a Merge Request from `dev-f-*` to the matching `f-*` branch via `yunke-cli` (installs it first if missing). `app_branch_id`, `repositories`, and `audit_user` always come from the query chain results and are reused verbatim on retries.
+3. Creates a Merge Request from `dev-f-*` to the matching `f-*` branch via `yunke-cli` (installs it first if missing). All queries go through `scripts/ship-to-test-query.js`, which wraps `yunke-cli` and prints compact JSON so the huge raw responses never enter the LLM context. The chain is: `branch-status` (also yields the test deploy targets) → `repositories` (yields `service_name`) → `applications` (yields `product_id`) → `users`. `app_branch_id`, `repositories`, and `audit_user` always come from these results and are reused verbatim on retries.
 4. Merges the created MR through the GitLab API using the `MY_WORKFLOW_GL_ACCESS_TOKEN` environment variable; pauses for the user on merge failures.
-5. Deploys the `f` branch to a user-selected test environment and prints the full deploy output.
+5. Deploys the `f` branch to every matched test environment (`env_code` containing `test` for the app whose `app_name` is contained in the project directory name) and prints the full deploy output for each.
 
 The chosen MR reviewer is remembered per project (keyed by the `origin` remote URL) in `~/.yunke-cli/my-workflow-reviewers.json`. Pass a reviewer name or keyword as the argument to override it:
 
