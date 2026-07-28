@@ -8,8 +8,6 @@ allowed-tools:
   - Bash(curl:*)
   - Bash(command:*)
   - Bash(node:*)
-  - Bash(mkdir:*)
-  - Bash(cat:*)
 ---
 
 ## Context
@@ -20,7 +18,6 @@ allowed-tools:
 - Recent commits: !`git log --oneline -10`
 - Remote origin: !`git remote get-url origin`
 - yunke-cli installed: !`command -v yunke-cli || echo "NOT_INSTALLED"`
-- Saved MR reviewers: !`cat ~/.yunke-cli/my-workflow-reviewers.json 2>/dev/null || echo "{}"`
 
 ## Goal
 
@@ -83,7 +80,7 @@ yunke-cli devops mars-branch-query-repositories --app_branch_id <上一步返回
    只有一个仓库时默认选择；多个仓库时让用户单选或多选。
 
 3. **确定审核人**：
-   - 审核人记忆文件为 `~/.yunke-cli/my-workflow-reviewers.json`，结构为 `{ "<origin远程地址>": { "audit_user": "...", "name": "..." } }`。
+   - 审核人记忆文件为 `~/.yunke-cli/my-workflow-reviewers.json`，结构为 `{ "<origin远程地址>": { "audit_user": "...", "name": "..." } }`。该文件在工作目录之外，必须使用 Read / Write 文件工具读写，禁止用 `cat` 等 shell 命令访问；文件不存在时视为空对象 `{}`。
    - 若用户通过 `$ARGUMENTS` 指定了审核人：查询用户列表并用它匹配，能唯一匹配就直接使用，无需再选。
    - 若未指定且记忆文件中存在本项目（以 Context 中的 origin 远程地址为 key）的记录：直接使用记录的审核人。
    - 否则查询用户列表并让用户选择：
