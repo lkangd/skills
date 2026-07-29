@@ -1,6 +1,6 @@
 ---
 description: Commit → push → create MR (dev-f → f) → merge MR → deploy f branch to test
-argument-hint: [审核人姓名或关键字]
+argument-hint: [reviewer name or keyword]
 allowed-tools:
   - Bash(git:*)
   - Bash(yunke-cli:*)
@@ -18,47 +18,47 @@ allowed-tools:
 
 ## Goal
 
-将当前项目的变更走完整个接测链路：提交 → push → 创建 dev-f → f 的 Merge Request → 通过 GitLab API 合并 MR → 将 f 分支部署到全部测试环境。
+Run the current project's changes through the full ship-to-test pipeline: commit → push → create Merge Request (dev-f → f) → merge the MR via GitLab API → deploy the f branch to all test environments.
 
-`$ARGUMENTS` 为可选的 MR 审核人姓名或关键字。
+`$ARGUMENTS` is an optional MR reviewer name or keyword.
 
-除步骤 1（提交，需要生成 commit message）外，整个链路由一体化脚本一次性完成。**禁止手动执行 git pull/push、yunke-cli 查询/创建/部署或 GitLab API 调用来替代脚本**；agent 只负责：跑脚本、读输出、出错时按脚本给出的 `RESUME` 命令断点续跑。
+Except for Step 1 (commit, which requires generating a commit message), the entire pipeline is completed in one shot by the integrated script. **Do not manually run git pull/push, yunke-cli query/create/deploy, or GitLab API calls in place of the script**; the agent only: runs the script, reads its output, and on failure resumes from the breakpoint using the `RESUME` command provided by the script.
 
-## 步骤 1：提交变更
+## Step 1: Commit changes
 
-若 Context 中 git status 显示没有任何变更（工作区干净），跳过本步骤直接进入步骤 2。
+If git status in Context shows no changes (clean working tree), skip this step and go directly to Step 2.
 
 Based on the above changes, create a single git commit. If recent commits are empty, use the standard commitizen commit format.
 
 You have the capability to call multiple tools in a single response. Stage and create the commit using a single message. **Do not send something like 'Co-Authored-By'.**
 
-## 步骤 2：执行一体化接测脚本
+## Step 2: Run the integrated ship-to-test script
 
-运行（`$ARGUMENTS` 非空时追加 `--audit-user "$ARGUMENTS"`）：
+Run (append `--audit-user "$ARGUMENTS"` when `$ARGUMENTS` is non-empty):
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-run.js" run
 ```
 
-脚本内部依次完成：环境检查（yunke-cli 缺失时自动安装、GitLab token 检查）→ `git pull --rebase` + `git push` → yunke-cli 查询链（分支状态/仓库/应用/审核人）→ 创建 MR 并通过 GitLab API 反查 MR 链接 → 合并 MR → 对全部接测目标（`env_code` 含 `test` 且 `app_name` 与目录名匹配的环境）逐个部署并原样打印结果。前置查询结果落在状态文件中，断点续跑时原样复用，不会重新推断参数。
+The script internally runs in order: environment checks (auto-install yunke-cli if missing, GitLab token check) → `git pull --rebase` + `git push` → yunke-cli query chain (branch status / repo / app / reviewers) → create MR and resolve the MR link via GitLab API → merge MR → deploy to every ship-to-test target (environments whose `env_code` contains `test` and whose `app_name` matches the directory name), printing each result as-is. Prerequisite query results are stored in the state file and reused verbatim on resume; parameters are not re-inferred.
 
-审核人取自 `~/.yunke-cli/my-workflow-reviewers.json`，优先级：显式 `--audit-user` > `*` 级记录（所有项目通用） > 本项目记录（origin 为 key） > 让用户选择。
+Reviewers come from `~/.yunke-cli/my-workflow-reviewers.json`, with priority: explicit `--audit-user` > `*` record (all projects) > project record (origin as key) > ask the user to choose.
 
-## 步骤 3：处理脚本输出
+## Step 3: Handle script output
 
-按输出末尾的 `STATUS` 处理：
+Handle based on the trailing `STATUS`:
 
-- **`STATUS: OK`**：读取 `SUMMARY` 与各环境部署的完整输出，进入汇报。若输出中包含 `ASK_REGISTER_GLOBAL` 行（本次通过参数新增了审核人），在汇报时询问用户是否将该审核人注册为 `*` 级（所有项目通用）；用户同意则执行该行给出的 `register-global` 命令。
-- **`STATUS: NEED_USER`**：需要用户介入。按 `DETAIL` 处理，问题解决后执行输出中的 `RESUME` 命令继续（不要从头重跑）。常见情形：
-  - **rebase 冲突**：先自行查看冲突内容，判断能否安全解决（如纯格式、显然互不相关的改动），能则解决后 `git rebase --continue` 再按 `RESUME` 续跑；不能则让用户介入，用户确认处理完后续跑。
-  - **审核人待选择**：`DETAIL` 中已包含候选列表，让用户选择，并同时询问是否将所选审核人注册为 `*` 级（所有项目通用）。选择后将所选 `user_name` 填入 `RESUME` 命令的 `--audit-user` 参数续跑（脚本会写入本项目记忆）；若用户同意注册为 `*` 级，再执行 `node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-run.js" register-global <user_name>`。
-  - **缺少 GitLab token**：让用户配置环境变量 `MY_WORKFLOW_GL_ACCESS_TOKEN` 后续跑（不要打印其值）。
-- **`STATUS: ERROR`**：读取 `STEP` 与 `DETAIL`。能自行安全修复的（如 push 被拒需先同步）修复后按 `RESUME` 续跑；不能则向用户说明失败原因与建议操作，等用户确认后续跑。MR 合并失败的常见原因是流水线未通过、需要审批或存在冲突。
+- **`STATUS: OK`**: Read `SUMMARY` and the full deploy output for each environment, then report. If the output contains an `ASK_REGISTER_GLOBAL` line (a reviewer was added via argument this run), ask the user during the report whether to register that reviewer as `*` (all projects); if they agree, run the `register-global` command given on that line.
+- **`STATUS: NEED_USER`**: User intervention required. Follow `DETAIL`, then continue with the `RESUME` command in the output after the issue is resolved (do not restart from scratch). Common cases:
+  - **rebase conflict**: Inspect the conflict yourself and decide whether it can be resolved safely (e.g. pure formatting, clearly unrelated changes). If yes, resolve, run `git rebase --continue`, then resume via `RESUME`; if not, involve the user and resume after they confirm it is done.
+  - **reviewer pending selection**: `DETAIL` already includes the candidate list; ask the user to choose, and also ask whether to register the chosen reviewer as `*` (all projects). After selection, put the chosen `user_name` into the `RESUME` command's `--audit-user` and continue (the script writes project memory); if the user agrees to register as `*`, also run `node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-run.js" register-global <user_name>`.
+  - **missing GitLab token**: Ask the user to set the `MY_WORKFLOW_GL_ACCESS_TOKEN` environment variable, then resume (do not print its value).
+- **`STATUS: ERROR`**: Read `STEP` and `DETAIL`. If it can be fixed safely (e.g. push rejected and needs sync first), fix then resume via `RESUME`; otherwise explain the failure and suggested actions to the user, and wait for confirmation before resuming. Common causes of MR merge failure: pipeline not passed, approval required, or conflicts.
 
 ## Report
 
-全部完成后，用中文简要汇报：
+After everything completes, briefly report in Chinese:
 
-1. 提交的 commit 信息与 push 结果。
-2. 创建并已合并的 MR 链接与审核人。
-3. 每个接测目标环境与对应的部署触发结果（部署命令的完整输出已由脚本打印，摘要即可，异常环境需明确指出）。
+1. The committed message and push result.
+2. The created-and-merged MR link and reviewer.
+3. Each ship-to-test target environment and its deploy trigger result (the script already printed full deploy command output; a summary is enough; call out any failed environments explicitly).
