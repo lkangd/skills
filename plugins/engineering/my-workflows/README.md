@@ -114,15 +114,17 @@ The command stops with `STATUS: ERROR` and does not delete anything for protecte
 
 ### `/my-workflows:ship-to-test [审核人]`
 
-Ships the current `dev-f` branch changes all the way to the test environment:
+Ships the current `dev-f` branch changes all the way to the test environment. The agent only writes the commit message; everything else runs in one shot via `scripts/ship-to-test-run.js`:
 
-1. Commits current changes (inlined commit rules, no `Co-Authored-By`).
-2. Runs `git pull --rebase` then `git push`; pauses for the user on unresolvable conflicts.
-3. Creates a Merge Request from `dev-f-*` to the matching `f-*` branch via `yunke-cli` (installs it first if missing). All queries go through `scripts/ship-to-test-query.js`, which wraps `yunke-cli` and prints compact JSON so the huge raw responses never enter the LLM context. The chain is: `branch-status` (also yields the test deploy targets) → `repositories` (yields `service_name`) → `applications` (yields `product_id`) → `users`. `app_branch_id`, `repositories`, and `audit_user` always come from these results and are reused verbatim on retries.
-4. Merges the created MR through the GitLab API using the `MY_WORKFLOW_GL_ACCESS_TOKEN` environment variable; pauses for the user on merge failures.
-5. Deploys the `f` branch to every matched test environment (`env_code` containing `test` for the app whose `app_name` is contained in the project directory name) and prints the full deploy output for each.
+1. Env checks: git repo, `dev-f*` branch, `MY_WORKFLOW_GL_ACCESS_TOKEN` present, `yunke-cli` installed (auto-installs if missing).
+2. `git pull --rebase` then `git push`.
+3. `yunke-cli` query chain: `branch-status` (yields `app_branch_id` and the test deploy targets: `env_code` containing `test` for the app whose `app_name` is contained in the project directory name) → `repositories` (yields `service_name` and GitLab project path) → `applications` (yields `product_id`) → reviewer resolution.
+4. Creates the Merge Request from `dev-f-*` to the matching `f-*` branch, then finds the MR via the GitLab API (the create response contains no MR link) and merges it with `MY_WORKFLOW_GL_ACCESS_TOKEN`.
+5. Deploys the `f` branch to every matched test environment and prints the full deploy output for each.
 
-The chosen MR reviewer is remembered per project (keyed by the `origin` remote URL) in `~/.yunke-cli/my-workflow-reviewers.json`. Pass a reviewer name or keyword as the argument to override it:
+The script prints a `STATUS: OK | NEED_USER | ERROR` protocol with `STEP` / `DETAIL` / `RESUME` lines, so on failure the agent (or user) resolves the issue and resumes from the failed step (`--from sync|plan|create|merge|deploy`) instead of rerunning everything. Query results are cached in `<git-dir>/ship-to-test-state.json` and reused verbatim on resume.
+
+The chosen MR reviewer is remembered in `~/.yunke-cli/my-workflow-reviewers.json`, either per project (keyed by the `origin` remote URL) or globally (keyed by `*`). Resolution priority: explicit argument > `*` entry > project entry > ask the user. When a new reviewer is added, the agent asks whether to register it as the `*` entry (`ship-to-test-run.js register-global <user_name>`). Pass a reviewer name or keyword as the argument to override the memory:
 
 ```bash
 /my-workflows:ship-to-test 张三
