@@ -2,6 +2,7 @@
 name: simplify-permissions
 description: This skill should be used to audit, simplify, merge, or apply Claude Code `permissions.allow` rules in settings files. Trigger on permission prompts, allowlist cleanup, fine-grained Bash/MCP/tool rules, permission simplification, or cleanup of `permissions.allow`. Default to dry-run analysis and never write settings until the user confirms the final proposed diff.
 argument-hint: "[settings-file] [--apply] [--aggressive]"
+disable-model-invocation: true
 ---
 
 # Simplify Permissions
@@ -27,6 +28,7 @@ Prefer Context7 or the docs skill or helper when available. Apply documented rul
 - MCP allow wildcards using the anchored form `mcp__<server>__*`, while remembering that this still grants every exposed tool on that server.
 - `Read`/`Edit`/`Write` path anchors: `//`, `~/`, `/`, and relative paths.
 - deny/ask/allow precedence: deny first, then ask, then allow.
+- which commands Claude Code auto-allows without prompting. Exact rules fully covered by built-in auto-allow are dead weight: delete them, do not merge them. A reference snapshot of the built-in auto-allow list lives in `references/builtin-auto-allow.md` in this skill directory.
 
 ## Snapshot Consistency
 
@@ -44,33 +46,39 @@ Treat every recommendation as tied to a specific file snapshot.
 
 1. Read the target settings file before making any recommendation.
 2. Parse JSON and extract `permissions.allow`; preserve all unrelated settings.
-3. Group allow rules by tool family:
+3. Build a scripted frequency table (for example `jq` plus `sort | uniq -c`) that groups every rule by tool family and, for `Bash(...)`, by leading command plus first subcommand. Do not rely on eyeballing the raw JSON; in large files the biggest families are exactly the ones that get missed.
+4. Group allow rules by tool family:
    - `Bash(...)`
    - `mcp__*`
    - `Skill(...)`
    - `Read(...)`, `Edit(...)`, `Write(...)`
    - `WebFetch(...)`
    - other tools
-4. For `Bash(...)`, group by command family: `rg`, absolute-path `rg`, `git`, `eslint`, `yarn`, `npm`, `pnpm`, `rtk`, `python`, `node`, `lsof`, `command -v`, absolute-path read-only commands, and other commands.
-5. In the first analysis pass, identify:
-   - exact duplicates
+5. For `Bash(...)`, group by command family: `rg`, absolute-path `rg`, `git`, `eslint`, `yarn`, `npm`, `pnpm`, `rtk`, `python`, `node`, `lsof`, `command -v`, absolute-path read-only commands, and other commands. Two extra requirements:
+   - Before grouping, normalize superficial variants so they land in the same family: double-quoted vs single-quoted paths to the same executable, `bash <script>` vs direct `<script>` invocation, `/usr/bin/git` vs `git`, and leading environment-variable assignments.
+   - For `git`, `gh`, and `docker`, split the family into read-only subcommands (`grep`, `log`, `diff`, `show`, `blame`, `status`, `ls-tree`, `ls-files`, `rev-parse`, `rev-list`, and similar) and mutating subcommands, and classify the two halves independently. Never let a few mutating rules drag an entire family into `High Risk`.
+6. In the first analysis pass, identify:
+   - exact duplicates, including duplicates that only differ in quoting or wrapper form
    - narrow rules already covered by a broader same-scope rule
+   - rules fully covered by Claude Code built-in auto-allow that will never prompt again (see "Rules Covered by Built-In Auto-Allow")
+   - dangerous existing broad rules that already grant arbitrary code execution (see "Dangerous Existing Broad Rules")
    - low-risk read or query groups that can be merged
-   - stale or low-value rules that should be deleted instead of generalized
+   - stale, one-shot, or low-value rules that should be deleted instead of generalized
    - malformed or likely invalid rules that should be deleted instead of merged
    - wrapper or read-only candidate merges that reduce prompts but require confirmation
    - high-risk command families that should stay narrow
-6. Produce a layered dry-run report with four explicit buckets:
+7. Coverage is mandatory: every family with 3 or more rules must appear in the report table with an explicit classification (`Merge`, `Delete`, `Needs Confirmation`, `Keep Narrow`, or `High Risk`). Silently skipping a family — especially a large one — is a failed audit. Cross-check the frequency table from step 3 against the report table before presenting it.
+8. Produce a layered dry-run report with four explicit buckets:
    - low-risk direct suggestions
    - confirmation-only candidates
    - stale or malformed delete candidates
    - intentionally narrow or high-risk rules to keep
-7. If the user wants apply mode, re-read the file before showing the final confirmation prompt. If the file drifted, pause and resolve the snapshot choice before presenting a final diff.
-8. After writing, validate JSON and run a lightweight second pass that looks only for:
-   - exact rules newly covered by the approved broader rules
-   - newly exposed stale temp, worktree, or artifact rules
-   - obvious same-family residue that the first pass missed
-9. Keep the post-write rescan bounded. Do at most two total cleanup rounds unless the user explicitly asks for a deeper audit.
+9. If the user wants apply mode, re-read the file before showing the final confirmation prompt. If the file drifted, pause and resolve the snapshot choice before presenting a final diff.
+10. After writing, validate JSON and run a lightweight second pass that looks only for:
+    - exact rules newly covered by the approved broader rules
+    - newly exposed stale temp, worktree, or artifact rules
+    - obvious same-family residue that the first pass missed
+11. Keep the post-write rescan bounded. Do at most two total cleanup rounds unless the user explicitly asks for a deeper audit. If the second pass finds deletable residue, offer it as one more explicit confirmation option instead of only mentioning it in the report.
 
 ## Output Format
 
@@ -83,7 +91,7 @@ Classifications:
 
 - `Merge`: safe or low-risk consolidation.
 - `Keep Narrow`: keep narrow because broadening changes the safety boundary.
-- `Delete`: duplicate, stale, malformed, or low-value rule.
+- `Delete`: duplicate, stale, one-shot, malformed, low-value, or covered by built-in auto-allow.
 - `Needs Confirmation`: potentially useful but materially broadens capability or wrapper scope.
 - `High Risk`: do not broaden; consider ask or deny if relevant.
 
@@ -108,6 +116,8 @@ After the table, include:
 - wrapper candidates that could reduce future prompts but require confirmation
 - unchanged rules that remain intentionally narrow
 - rules explicitly not recommended
+- confirmation that every family with 3 or more rules appears in the table
+- prompt-source substitution advice when repeated read-only interpreter one-liners were found (see "Prompt-Source Substitution Advice")
 - second-pass follow-up items, or `none` if the first pass already looks closed
 
 If snapshot drift is detected before apply confirmation, stop and show the drift instead of pretending the add and remove list is still final.
@@ -134,6 +144,10 @@ Treat these as delete-first candidates unless the user gives a current reason to
 - Claude worktree temp paths such as `.claude/worktrees/agent-*/...`
 - one-off review artifacts such as generated `.html`, `.txt`, `.json`, or staged diff files in temp or worktree locations
 - absolute-path rules pointing at obviously ephemeral outputs
+- rules invoking compiled one-off debug binaries or scripts, such as `Bash(./probe)`, `Bash(./repro 8 10)`, or `Bash(/tmp/bench_*)` — the target file usually no longer exists
+- rules whose arguments are inherently one-shot and will never match again verbatim: a specific commit hash, a dead PID (`kill 74225`), a session or space UUID, an exact line-number range, or an exact search regex with heavy quoting and escaping
+- interpreter one-liners whose inline script text is tied to a single past task (see "Interpreter One-Liner Rules")
+- debug `echo` probes such as `Bash(echo "exit: $?")` — `echo` is built-in auto-allowed, and the exact string never recurs
 
 When one of these appears:
 
@@ -156,6 +170,42 @@ Handle them as follows:
 - classify them as `Delete` with reason `Malformed or likely invalid`
 - do not try to normalize them into a broader valid rule automatically
 - keep valid neighboring rules separate so the user can distinguish bad leftovers from legitimate permissions
+
+## Rules Covered by Built-In Auto-Allow
+
+Claude Code auto-allows a large set of read-only commands without ever prompting: common file and text inspection commands (`cat`, `ls`, `head`, `tail`, `wc`, `echo`, `which`, `tree`, and many more), validated read-only forms of `grep`, `rg`, `sed`, `find`, `jq`, `ps`, and others, all read-only `git` subcommands (`status`, `log`, `diff`, `show`, `blame`, `grep`, `branch`, `ls-files`, `rev-parse`, and similar), read-only `gh` subcommands, and read-only `docker` subcommands (`ps`, `images`, `logs`, `inspect`). Read `references/builtin-auto-allow.md` in this skill directory for the full snapshot before classifying rules in this bucket.
+
+- An exact allow rule whose command is fully covered by built-in auto-allow will never prompt again. Classify it `Delete` with reason `covered by built-in auto-allow`. Deleting is strictly better than merging.
+- This is usually the single largest cleanup bucket in old allowlists: entire `git grep`/`git log`/`git blame` families accumulated before auto-allow existed can be removed wholesale.
+- Auto-allow validates flags: a command is only covered when its flags are read-only (for example `find` without `-delete`/`-exec`, `sed` with read-only expressions). When unsure whether a specific flag combination is covered, keep the rule and say so instead of guessing.
+
+## Dangerous Existing Broad Rules
+
+Beyond refusing to create broad rules, actively scan the existing allowlist for rules that already grant arbitrary code execution silently. Look for:
+
+- stdin interpreter rules: `Bash(python3 -)`, `Bash(python -)`, bare `Bash(osascript)`, bare `Bash(bash)` or `Bash(sh)`
+- prefix-wildcard inline-script rules such as `Bash(python3 -c ' *)` or `Bash(node -e ' *)` — the trailing wildcard makes these equivalent to allowing any code in that interpreter
+- shell-execution wildcards such as `Bash(bash -c *)` or `Bash(sh -c *)`
+- unquoted broad wrappers that reduce to the same thing, such as `Bash(xargs *)` with command-running usage
+
+Classify these `High Risk`, recommend deleting them or moving them to `permissions.ask`, and surface them at the top of the report before any count-reduction discussion. Finding one of these matters more than any merge.
+
+## Interpreter One-Liner Rules
+
+Rules that embed an inline script get special handling. This covers any interpreter invoked with `-e`, `-c`, `-ne`, `-pe`, `-pi`, or `-i` (`perl`, `ruby`, `node`, `python`, `swift`, `osascript -e`, and similar), plus interpreters that take the script as a bare first argument, such as `awk '{...}'` and `sed` with a mutating expression:
+
+- The script body is arbitrary code. Never merge or broaden these: `Bash(perl -ne *)` is arbitrary code execution no matter how read-only the observed scripts look.
+- The inline script text plus target path almost never recurs verbatim, so observed instances are one-shot: classify them `Delete`.
+- Treat `-i`/`-pi` variants as write operations on the target files.
+- The only valid outcomes for this family are `Delete` and `Keep Narrow`. They must never appear under `Merge` or `Needs Confirmation`.
+
+## Prompt-Source Substitution Advice
+
+When the audit finds 3 or more read-only interpreter one-liners doing work that built-in auto-allowed commands already cover (printing line ranges, numbered file views, simple text extraction), the allowlist cannot fix that prompt noise — only agent behavior can. Add a short advice block at the end of the report suggesting a project memory rule (for example in CLAUDE.md) such as:
+
+> Prefer the Read tool or `sed -n '<start>,<end>p'` over perl/awk/python one-liners when viewing file contents.
+
+Present this as advice only. Do not edit CLAUDE.md from this skill unless the user explicitly asks.
 
 ## Absolute-Path Read-Only Command Decision Tree
 
@@ -186,9 +236,10 @@ Recommend these only as `Needs Confirmation` unless the existing rules and user 
 - Many `mcp__same-server__tool` rules -> `mcp__same-server__*`. MCP wildcards are anchored, but still allow every current and future tool exposed by that server.
 - Many read-only wrapper calls -> a wrapper subcommand wildcard, such as `Bash(rtk rg *)`, `Bash(rtk read *)`, or `Bash(yarn -s yrc eslint *)`, only when the subcommand itself is constrained to read or query behavior.
 - Broad validation scripts, such as `Bash(node scripts/check-*.js *)` or `Bash(python scripts/validate_*.py *)`, only when the matched scripts are already present and are not arbitrary task runners.
+- Three or more rules invoking the same fixed script path with varying arguments — plugin or skill helper scripts, docs helpers, project tooling — merge to the exact script path plus a trailing wildcard, such as `Bash(python3 "<path>/record_trace.py" *)`, `Bash(node .claude/skills/<skill>/scripts/<tool> *)`, or `Bash(~/.claude-code-docs/claude-docs-helper.sh *)`, only when the script itself is not an arbitrary task runner. This pattern often compresses 5-15 rules into one.
 - Absolute-path read-only command wildcards when they would reduce prompt noise but still broaden path or argument coverage beyond the currently observed rules.
 
-When these appear, surface them in a dedicated wrapper or confirmation-candidate section instead of burying them under `Keep Narrow`.
+When these appear, surface them in a dedicated wrapper or confirmation-candidate section instead of burying them under `Keep Narrow`. Every confirmation-only candidate must also appear as a selectable option in the apply confirmation prompt; never drop them silently when the user says "apply".
 
 ## Do Not Auto-Broaden
 
@@ -212,13 +263,15 @@ Do not recommend these as low-risk automatic merges:
 - `Skill(*)` or wildcard-style `Skill(...)` patterns that are not documented syntax
 - unanchored MCP allow globs such as `mcp__*`
 
+This list forbids whole-wrapper rules, not subcommand-level merges. `Bash(git *)` being listed does not forbid merging read-only git queries into `Bash(git -C <repo> grep *)` or `Bash(git log *)` — those remain valid `Merge` candidates under the safe merge heuristics. Do not over-generalize "never broaden git" into "never touch the git family".
+
 For `rtk`, prefer subcommand-specific rules such as `Bash(rtk rg *)`, `Bash(rtk read *)`, `Bash(rtk tsc *)`, and `Bash(rtk lint *)` rather than `Bash(rtk *)`.
 
 For `rtk git` and `rtk yarn`, prefer narrower forms such as `Bash(rtk git status *)`, `Bash(rtk git log *)`, `Bash(rtk git diff *)`, `Bash(rtk yarn lint *)`, `Bash(rtk yarn test *)`, and `Bash(rtk yarn build *)` unless the user confirms the wider subcommand boundary.
 
 For package managers, prefer explicit scripts such as `Bash(yarn lint *)`, `Bash(yarn test *)`, `Bash(yarn build *)`, and `Bash(yarn check:types)` rather than `Bash(yarn *)`.
 
-For Python and Node, preserve narrow stdin or exact-command rules; do not broaden to all scripts.
+For Python, Node, Perl, Ruby, and any other interpreter, preserve narrow stdin or exact-command rules; do not broaden to all scripts, and never allowlist an inline-script wildcard (see "Interpreter One-Liner Rules").
 
 For malformed rules, delete or escalate them; do not reinterpret them as valid broad permissions.
 
@@ -234,7 +287,7 @@ Only modify a settings file if all of the following are true:
 6. You re-read the target file after the first analysis and before the final confirmation prompt.
 7. If the file drifted, you paused and resolved which snapshot to use.
 8. You show a diff-style summary of the planned settings change.
-9. You ask for final confirmation using the available explicit confirmation mechanism, such as `AskUserQuestion` when available.
+9. You ask for final confirmation using the available explicit confirmation mechanism, such as `AskUserQuestion` when available, with multi-select enabled so the base delete set and each confirmation-only candidate can be approved or declined individually.
 10. The user confirms that the final proposal is acceptable.
 
 The `--apply` argument means the user wants an apply proposal; it does not bypass the re-read or final confirmation requirement.
@@ -247,8 +300,9 @@ When applying:
 - preserve `permissions.ask` and `permissions.deny` unchanged unless explicitly requested
 - remove exact duplicates
 - delete approved stale or malformed rules
-- add approved broader rules
+- add approved broader rules, including any confirmation-only candidates the user selected
 - remove only the narrow rules explicitly covered by the approved broader rules
+- list any declined confirmation-only candidates as untouched, so the user sees they were considered and skipped by choice
 - keep original ordering as much as practical: existing unrelated rules first, then new consolidated rules in the appropriate group
 - validate JSON after writing
 - report before and after allow counts
@@ -258,15 +312,16 @@ When applying:
 
 Before writing, ask a direct final question such as:
 
-"I will simplify `<target>` `permissions.allow` from X entries to Y entries. I will add A merged rules, remove B covered, duplicate, stale, or malformed rules, and keep high-risk commands narrow. Confirm write now?"
+"I will simplify `<target>` `permissions.allow` from X entries to Y entries. Select which changes to apply."
 
-Offer choices:
+Use a multi-select confirmation (`AskUserQuestion` with multi-select when available) whose options are:
 
-- `Confirm write`
-- `Show suggestions only`
-- `Adjust plan`
+- the base package: exact duplicates, stale or one-shot rules, malformed rules, and rules covered by built-in auto-allow
+- the dangerous-rule removals, as their own option so declining them is a visible decision
+- each confirmation-only merge candidate (or small groups of closely related ones), one option per candidate family
+- `Show suggestions only` / adjust
 
-Do not write unless the user chooses `Confirm write` or gives equivalent explicit confirmation.
+Do not collapse confirmation-only candidates into a single yes/no write question: a user saying "apply" to the base package must still get to decide each broadening candidate. Do not write unless the user selects at least one concrete option or gives equivalent explicit confirmation.
 
 ## Snapshot Drift Prompt
 
