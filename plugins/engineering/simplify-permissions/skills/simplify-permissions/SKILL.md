@@ -20,7 +20,7 @@ Audit Claude Code `permissions.allow` rules and recommend safe simplifications. 
 
 Before making judgments about rule syntax or matching behavior, consult current Claude Code docs for `permissions` and, when scope matters, `settings`.
 
-Prefer Context7 or the docs skill or helper when available. Apply documented rules, including:
+Prefer Context7 or the docs skill or helper when available. Keep the check scoped: read only the sections relevant to the rule families actually present in the target file, and do not re-fetch docs already read earlier in the session. The built-in auto-allow list does not require a docs fetch — use `references/builtin-auto-allow.md`. Apply documented rules, including:
 
 - `Tool` and `Tool(specifier)` matching.
 - `Bash(...)` wildcard behavior and word-boundary implications.
@@ -37,10 +37,21 @@ Treat every recommendation as tied to a specific file snapshot.
 - On the first read, record the target file, current `permissions.allow` count, whether `permissions.ask` and `permissions.deny` exist, and any notable high-risk families.
 - Before any final apply confirmation, re-read the target file.
 - If the `permissions.allow` count changed, or the relevant rule set changed in a way that affects the proposal, stop and tell the user the file drifted.
-- When drift is detected, do not silently merge old and new proposals. Ask the user whether to:
+- Exception: drift consisting only of self-referential rules — permissions auto-added for this session's own audit or apply commands — is not blocking. Fold those rules into the base delete package, note them in the report, and continue without a new confirmation round.
+- When non-self-referential drift is detected, do not silently merge old and new proposals. Ask the user whether to:
   - continue from the current file,
   - continue from the earlier snapshot, or
   - first explain the newly added or changed rules.
+
+## Execution Footprint and Prompt Hygiene
+
+This skill cleans an allowlist; its own execution must not pollute that allowlist or generate avoidable permission prompts.
+
+- For analysis, prefer auto-allowed read-only commands: `jq`, `rg`, `grep`, `sort`, `uniq`, `wc`. Avoid interpreter scripts for anything a `jq` pipeline can do.
+- Never write helper scripts to `/tmp` or anywhere outside the project. Every write, edit, and execution of an out-of-project script triggers a fresh permission prompt, and approving one with "don't ask again" injects a new junk rule into the very file being cleaned.
+- Apply changes to the settings file with the built-in file-editing tools (Edit/Write) directly on the target file, or with a single deterministic command. Do not build a throwaway classifier script at apply time.
+- Expect self-referential rules: any permission rule created during this session by the audit's own commands is automatically part of the base delete package (see Snapshot Consistency).
+- Minimize total user interruptions: the target is one confirmation interaction for the whole run (the multi-select apply prompt), plus only genuinely blocking questions.
 
 ## Analysis Workflow
 
@@ -78,7 +89,7 @@ Treat every recommendation as tied to a specific file snapshot.
     - exact rules newly covered by the approved broader rules
     - newly exposed stale temp, worktree, or artifact rules
     - obvious same-family residue that the first pass missed
-11. Keep the post-write rescan bounded. Do at most two total cleanup rounds unless the user explicitly asks for a deeper audit. If the second pass finds deletable residue, offer it as one more explicit confirmation option instead of only mentioning it in the report.
+11. Keep the post-write rescan bounded. Do at most two total cleanup rounds unless the user explicitly asks for a deeper audit. If the second pass finds residue that falls within a category the user already approved (the same stale, one-shot, auto-allow-covered, malformed, or duplicate buckets as the base package), delete it in the same session without asking again and list it in the final report. Only residue that would require a new broadening decision needs another confirmation.
 
 ## Output Format
 
@@ -103,7 +114,12 @@ For `Not Merged Because`, use `-` when a row is already resolved. Otherwise use 
 - `second-pass cleanup after main change`
 - `possible missed coverage; rescan recommended`
 
-For large allowlists, group repeated rows by family and include representative examples, but keep the final add and remove lists exact and copyable.
+For large allowlists, group repeated rows by family and include representative examples. Control output volume — on a 400-rule file, redundant prose costs several minutes of generation time:
+
+- Keep the report table at family level; never enumerate hundreds of rules row by row.
+- Write each rule's full text at most once across the whole response. The exact remove list appears once, grouped by family; other sections refer to families and counts.
+- For remove lists above ~50 entries, present family names with counts plus a handful of examples in the proposal, as long as the exact computed list is what the apply step executes. The add list is always shown in full because it changes capability.
+- The apply-time diff summary repeats counts and the add list, not the full remove list.
 
 After the table, include:
 
@@ -296,6 +312,8 @@ If the user has not confirmed the final proposal, stop after presenting the tabl
 
 When applying:
 
+- apply mechanically: the confirmed proposal already contains exact add and remove lists, so the write step only executes those lists. Do not re-derive classifications with new heuristic code at apply time; if the apply logic disagrees with the proposal, the apply logic is wrong.
+- edit the settings file directly with the built-in file-editing tools or one deterministic command; create a backup copy of the settings file next to it before the first write
 - preserve all non-permission settings
 - preserve `permissions.ask` and `permissions.deny` unchanged unless explicitly requested
 - remove exact duplicates
@@ -306,7 +324,7 @@ When applying:
 - keep original ordering as much as practical: existing unrelated rules first, then new consolidated rules in the appropriate group
 - validate JSON after writing
 - report before and after allow counts
-- run a lightweight second pass and report any newly exposed cleanup items
+- run a lightweight second pass; delete residue in already-approved categories directly and report it, and only ask again for residue that needs a new broadening decision
 
 ## Confirmation Prompt
 

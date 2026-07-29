@@ -120,7 +120,7 @@ Ships the current `dev-f` branch changes all the way to the test environment. Th
 2. `git pull --rebase` then `git push`.
 3. `yunke-cli` query chain: `branch-status` (yields `app_branch_id` and the test deploy targets: `env_code` containing `test` for the app whose `app_name` is contained in the project directory name) → `repositories` (yields `service_name` and GitLab project path) → `applications` (yields `product_id`) → reviewer resolution.
 4. Creates the Merge Request from `dev-f-*` to the matching `f-*` branch, then finds the MR via the GitLab API (the create response contains no MR link) and merges it with `MY_WORKFLOW_GL_ACCESS_TOKEN`.
-5. Deploys the `f` branch to every matched test environment and prints the full deploy output for each.
+5. Waits until the merge commit has actually landed on the `f` branch (polls the GitLab `commits/:sha/refs` API; merging is asynchronous, deploying immediately would test stale code), then deploys the `f` branch to every matched test environment and prints the full deploy output for each.
 
 The script prints a `STATUS: OK | NEED_USER | ERROR` protocol with `STEP` / `DETAIL` / `RESUME` lines, so on failure the agent (or user) resolves the issue and resumes from the failed step (`--from sync|plan|create|merge|deploy`) instead of rerunning everything. Query results are cached in `<git-dir>/ship-to-test-state.json` and reused verbatim on resume.
 

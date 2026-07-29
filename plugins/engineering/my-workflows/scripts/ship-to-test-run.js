@@ -375,6 +375,7 @@ async function stepCreate(env, state) {
       iid: mr.iid,
       web_url: mr.web_url,
       state: mr.state,
+      merged_sha: mr.merge_commit_sha || mr.squash_commit_sha || null,
     });
   }
   saveState(env, state);
@@ -398,6 +399,7 @@ async function stepMerge(env, state) {
     const res = await glFetch(`${base}/merge`, "PUT");
     if (res.status === 200 && res.body && res.body.state === "merged") {
       mr.state = "merged";
+      mr.merged_sha = res.body.merge_commit_sha || res.body.squash_commit_sha || res.body.sha || null;
       saveState(env, state);
       continue;
     }
@@ -408,7 +410,55 @@ async function stepMerge(env, state) {
   stepOk("merge", state.mrs.map((m) => m.web_url).join(", "));
 }
 
-function stepDeploy(env, state) {
+// GitLab 的 merge API 返回 merged 只代表受理，合并提交真正落到 f 分支引用是异步的。
+// 部署前必须确认 f 分支已包含合并提交，否则 Mars 流水线 checkout 到旧 tip，接测内容缺少刚合并的代码。
+async function waitMergeLanded(env, state) {
+  for (const mr of state.mrs) {
+    if (mr.state !== "merged") continue;
+    const projBase = `${mr.gl_host}/api/v4/projects/${encodeURIComponent(mr.gl_project_path)}`;
+
+    // 旧状态文件可能没有 merged_sha，回查 MR 详情补齐
+    if (!mr.merged_sha) {
+      const info = await glFetch(`${projBase}/merge_requests/${mr.iid}`);
+      if (info.status === 200) {
+        mr.merged_sha = info.body.merge_commit_sha || info.body.squash_commit_sha || info.body.sha || null;
+        saveState(env, state);
+      }
+    }
+    if (!mr.merged_sha) {
+      console.log(`警告: 无法获取 ${mr.web_url} 的合并提交 SHA，跳过落地确认（接测内容可能滞后，请在结果中留意）`);
+      continue;
+    }
+
+    const maxTries = 20;
+    let landed = false;
+    for (let i = 1; i <= maxTries; i++) {
+      const refs = await glFetch(`${projBase}/repository/commits/${mr.merged_sha}/refs?type=branch&per_page=100`);
+      if (refs.status === 200 && Array.isArray(refs.body) &&
+          refs.body.some((r) => r.name === state.f_branch)) {
+        landed = true;
+        console.log(`合并落地确认: ${mr.gl_project_path} 的 ${state.f_branch} 已包含 ${mr.merged_sha.slice(0, 10)}（第 ${i} 次检查）`);
+        break;
+      }
+      if (refs.status !== 200 && refs.status !== 404) {
+        stop("ERROR", "deploy",
+          `确认合并落地时 GitLab 查询失败 HTTP ${refs.status}: ${JSON.stringify(refs.body).slice(0, 800)}`,
+          resumeCmd("deploy"));
+      }
+      if (i < maxTries) await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (!landed) {
+      stop("ERROR", "deploy",
+        `等待约 ${maxTries * 3} 秒后，${mr.gl_project_path} 的 ${state.f_branch} 分支仍未包含合并提交 ${mr.merged_sha}（${mr.web_url}）。为避免无效接测已中止部署，请确认合并状态后续跑`,
+        resumeCmd("deploy"));
+    }
+  }
+  // 留出短暂缓冲，等待 Mars 侧仓库同步
+  await new Promise((r) => setTimeout(r, 3000));
+}
+
+async function stepDeploy(env, state) {
+  await waitMergeLanded(env, state);
   const results = [];
   for (const t of state.deploy_targets) {
     const res = yunke(["mars-branch-deploy-branch", "--app_branch_id", String(state.app_branch_id), "--env_code", t.env_code]);
@@ -448,7 +498,7 @@ function stepDeploy(env, state) {
 
   if (fromIdx <= STEPS.indexOf("create")) await stepCreate(env, state);
   if (fromIdx <= STEPS.indexOf("merge")) await stepMerge(env, state);
-  const deployResults = stepDeploy(env, state);
+  const deployResults = await stepDeploy(env, state);
 
   console.log("\nSTATUS: OK");
   console.log("SUMMARY:");

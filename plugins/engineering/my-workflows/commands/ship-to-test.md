@@ -40,7 +40,7 @@ Run (append `--audit-user "$ARGUMENTS"` when `$ARGUMENTS` is non-empty):
 node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-run.js" run
 ```
 
-The script internally runs in order: environment checks (auto-install yunke-cli if missing, GitLab token check) → `git pull --rebase` + `git push` → yunke-cli query chain (branch status / repo / app / reviewers) → create MR and resolve the MR link via GitLab API → merge MR → deploy to every ship-to-test target (environments whose `env_code` contains `test` and whose `app_name` matches the directory name), printing each result as-is. Prerequisite query results are stored in the state file and reused verbatim on resume; parameters are not re-inferred.
+The script internally runs in order: environment checks (auto-install yunke-cli if missing, GitLab token check) → `git pull --rebase` + `git push` → yunke-cli query chain (branch status / repo / app / reviewers) → create MR and resolve the MR link via GitLab API → merge MR → poll until the merge commit has actually landed on the `f` branch (merging is asynchronous; deploying immediately would test stale code) → deploy to every ship-to-test target (environments whose `env_code` contains `test` and whose `app_name` matches the directory name), printing each result as-is. Prerequisite query results are stored in the state file and reused verbatim on resume; parameters are not re-inferred.
 
 Reviewers come from `~/.yunke-cli/my-workflow-reviewers.json`, with priority: explicit `--audit-user` > `*` record (all projects) > project record (origin as key) > ask the user to choose.
 
