@@ -1,5 +1,5 @@
 ---
-runner: ccsp -g glm-mix claude
+runner: ccsp -g my-kimi-mix claude
 concurrency: 0
 max_rounds: 3
 backlog_dir: docs/code-review-backlog
