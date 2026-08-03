@@ -7,6 +7,14 @@ Throughout this document, **review target** (审查内容) means whatever the us
 one or more commits, staged changes, the working tree, specific files, or a branch diff.
 Never assume it is a pull request.
 
+`PLUGIN_ROOT` below is the absolute plugin path the invoking command resolved and printed for
+you. Substitute that literal path every time it appears — in Bash commands and in Read paths
+alike. Never write `${CLAUDE_PLUGIN_ROOT}` into a tool call: that variable is not exported into
+the Bash tool's shell, so it expands to an empty string and the call dies with exit 127 before
+anything runs. If the command did not give you a path, resolve it yourself with
+`bash -c 'ls -td "$HOME"/.claude/plugins/cache/*/code-review/*/scripts/run-orchestrator.sh | head -1'`
+and take the directory two levels above the script.
+
 ## Division of labor
 
 You (the current session) do NOT orchestrate the review. The entire pipeline — diff
@@ -92,9 +100,11 @@ never fabricate a spec, and never block the review on one.
    timeout, wasting every reviewer token spent so far. Do not pass a `timeout`. After
    launching, do NOT busy-wait: no `sleep` loops, no repeated file reads — end your turn
    and wait for the harness's background-task completion notification, then continue at
-   step 4. Launch command:
+   step 4. Launch command (`PLUGIN_ROOT` = the resolved absolute path; if
+   `test -f "<PLUGIN_ROOT>/scripts/run-orchestrator.sh"` fails, the path is wrong — fix it
+   before launching rather than sending a doomed background task):
    ```
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator.sh" \
+   bash "PLUGIN_ROOT/scripts/run-orchestrator.sh" \
      --runner "<runner from config>" \
      --run-dir "RUN_DIR" \
      --target "<precise description of the review target>" \
@@ -155,7 +165,7 @@ id (`RUN_DIR/session-id`), and per-step checkpoints (`RUN_DIR/out/candidates-*.j
 as a launch — with:
 
 ```
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/run-orchestrator.sh" --resume \
+bash "PLUGIN_ROOT/scripts/run-orchestrator.sh" --resume \
   --runner "<runner from config>" \
   --run-dir "<the failed RUN_DIR>"
 ```
@@ -172,7 +182,7 @@ instead of starting a new round.
 ## §4 In-session mode (`runner: in-session`)
 
 No external process: you act as the orchestrator yourself. Execute the procedure in
-`${CLAUDE_PLUGIN_ROOT}/references/orchestrator.md` directly in this session, with these
+`PLUGIN_ROOT/references/orchestrator.md` directly in this session, with these
 substitutions:
 
 - The "launch parameters" that document references are the values you resolved in §1–§2;
@@ -217,7 +227,7 @@ classify:
   simpler/deeper form actually works.
 - **Confirmed, but out of scope** (pre-existing, or the fix is large/risky relative to the
   review target) → file it in the backlog: one file per issue in `backlog_dir` following
-  `${CLAUDE_PLUGIN_ROOT}/references/backlog-template.md`. Glob the backlog dir first and update
+  `PLUGIN_ROOT/references/backlog-template.md`. Glob the backlog dir first and update
   an existing entry instead of duplicating.
 - **Not confirmed** → record why the finding is wrong (you will report this; do not fix).
 

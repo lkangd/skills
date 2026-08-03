@@ -10,6 +10,7 @@ allowed-tools:
   - Bash(git status:*)
   - Bash(mkdir:*)
   - Bash(printenv:*)
+  - Bash(test:*)
   - Read
   - Grep
   - Glob
@@ -23,6 +24,17 @@ Sentinel value (must be empty): `!`printenv CODE_REVIEW_CHILD``
 If the sentinel value above is non-empty, you are running inside a reviewer process. Reply
 exactly: "Refusing: /code-review:adversarial invoked from inside a code-review reviewer." and
 stop. Do not run any tool.
+
+## Plugin root — resolve before any script call
+
+Resolved plugin root: `!`bash -c 'r="${CLAUDE_PLUGIN_ROOT}"; [ -f "$r/scripts/run-orchestrator.sh" ] || r=$(ls -td "$HOME"/.claude/plugins/cache/*/code-review/*/scripts/run-orchestrator.sh 2>/dev/null | head -1); r=${r%/scripts/run-orchestrator.sh}; printf "%s\n" "${r:-UNRESOLVED}"'``
+
+The absolute path printed above is **PLUGIN_ROOT** for this run. `CLAUDE_PLUGIN_ROOT` is *not*
+exported into Bash or Read tool calls, so any command carrying the literal
+`${CLAUDE_PLUGIN_ROOT}` expands to an empty string and dies with exit 127 before the
+orchestrator starts. Wherever review-core.md writes `PLUGIN_ROOT`, substitute that absolute
+path. If it printed `UNRESOLVED`, stop and tell the user the plugin install could not be
+located.
 
 ## Arguments
 
@@ -38,7 +50,7 @@ Raw arguments: `$ARGUMENTS`
 
 ## Procedure
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/review-core.md` and execute it in **loop mode**. You do
+Read `PLUGIN_ROOT/references/review-core.md` and execute it in **loop mode**. You do
 not orchestrate the reviews — each round launches one orchestrator session that does the diff
 collection, reviewer dispatch, and finding verification, and hands you a consolidated report:
 
