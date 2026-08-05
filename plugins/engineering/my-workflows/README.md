@@ -132,6 +132,25 @@ The chosen MR reviewer is remembered in `~/.yunke-cli/my-workflow-reviewers.json
 /my-workflows:ship-to-test 张三
 ```
 
+### `/my-workflows:generate-test-report <change-scope> [--view=e2e|code-review|both] [--output=<path>]`
+
+Analyzes a user-specified Git change scope and writes an audience-focused test-submission report. Reports are written in Simplified Chinese by default.
+
+The default perspective is E2E manual testing. Code Review content is included only when explicitly requested with `--view=code-review`, `--view=both`, or equivalent natural-language intent. The adaptive presentation guide at `references/test-report-template.md` uses tables for structured comparisons and omits headings for delivery surfaces that are not affected by the change.
+
+The scope can be a commit, commit range, branch comparison, staged changes, uncommitted changes, or an unambiguous natural-language description:
+
+```bash
+/my-workflows:generate-test-report HEAD~3..HEAD
+/my-workflows:generate-test-report abc123 --view=code-review
+/my-workflows:generate-test-report current branch compared with main --view=both --output=docs/testing/
+/my-workflows:generate-test-report uncommitted --output=docs/test-reports/report.md
+```
+
+When `--output` is omitted, the command finds the existing directory with the highest concentration of Markdown files, inspects whether it is an appropriate project documentation or report location, and writes the report there only when the fit is clear. Otherwise it asks the user to choose a directory instead of creating a new documentation convention. Existing report files are never overwritten without confirmation.
+
+The command reconstructs behavior before and after the change from repository evidence. Missing environment, account, route, test-data, or command details are marked explicitly instead of being inferred.
+
 ## Branch Format
 
 Branch names must match:
