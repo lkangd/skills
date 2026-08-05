@@ -53,6 +53,7 @@ evals
 # Temporary files
 .tmp/
 docs/handoffs/
+.claude/plans/
 
 # private
 .private/
