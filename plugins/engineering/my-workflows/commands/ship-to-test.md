@@ -1,5 +1,5 @@
 ---
-description: Commit → push → create MR (dev-f → f) → merge MR → deploy f branch to test
+description: Commit → push → create MR (dev-f → f or dev-bg → bg) → merge MR → deploy f branch to test
 argument-hint: [reviewer name or keyword]
 allowed-tools:
   - Bash(git:*)
@@ -18,7 +18,7 @@ allowed-tools:
 
 ## Goal
 
-Run the current project's changes through the full ship-to-test pipeline: commit → push → create Merge Request (dev-f → f) → merge the MR via GitLab API → deploy the f branch to all test environments.
+Run the current project's changes through the full ship-to-test pipeline: commit → push → create Merge Request (dev-f → f or dev-bg → bg) → merge the MR via GitLab API → deploy the f branch to all test environments.
 
 `$ARGUMENTS` is an optional MR reviewer name or keyword.
 
