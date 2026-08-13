@@ -34,15 +34,19 @@ every candidate with a nameable failure scenario through — silently dropping h
 candidates is the dominant cause of missed bugs. State the failure as the user-visible
 consequence (error, wrong output, data loss), not an intermediate state.
 
-Your entire final message must be exactly one fenced ```json code block containing an array
-of finding objects — no prose before or after it. Nothing qualifies after a genuine pass =
-the empty array `[]`. The JSON keys and the severity values are machine-parsed ASCII
-protocol: never translate them, whatever language you review in; string values may be in any
-language.
+Your entire final message must be exactly one fenced ```json code block containing a
+completion receipt object — no prose before or after it. Set `status` to the exact ASCII value
+`completed` and `findings` to the finding array. Nothing qualifies after a genuine pass =
+`{"status":"completed","findings":[]}`; never return a bare empty array. The JSON keys,
+`completed`, and the severity values are machine-parsed ASCII protocol: never translate them,
+whatever language you review in; string values may be in any language. The `findings` array
+uses this schema:
 
 ```json
-[
-  {
+{
+  "status": "completed",
+  "findings": [
+    {
     "severity": "critical|major|minor|nit",
     "title": "<one-line title>",
     "file": "<repo-relative path of the missed call site / stale reference / unsafe call>",
@@ -50,8 +54,9 @@ language.
     "evidence": "<the changed contract in the diff + the affected reference, both quoted>",
     "why": "<what happens at that call site now: crash, wrong result, stale doc>",
     "suggestion": "<smallest viable fix>"
-  }
-]
+    }
+  ]
+}
 ```
 
 Severity: `critical` = data loss/corruption/security; `major` = wrong behavior users will hit;

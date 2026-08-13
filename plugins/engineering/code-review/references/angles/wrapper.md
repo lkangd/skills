@@ -25,8 +25,8 @@ wrapping discipline:
 4. Lifecycle symmetry: everything the wrapper starts/acquires on the wrapped instance is
    stopped/released on the wrapper's own teardown path.
 
-If the diff contains no wrapper-shaped type, verify that quickly and return the empty array —
-do not stretch the definition to manufacture findings.
+If the diff contains no wrapper-shaped type, verify that quickly and return a completed
+receipt with an empty `findings` array — do not stretch the definition to manufacture findings.
 
 ## Output format (mandatory)
 
@@ -35,15 +35,19 @@ independent verifier examines every candidate next, and refuting is its job, not
 every candidate with a nameable failure scenario through. State the failure as the
 user-visible consequence, not an intermediate state.
 
-Your entire final message must be exactly one fenced ```json code block containing an array
-of finding objects — no prose before or after it. Nothing qualifies after a genuine pass =
-the empty array `[]`. The JSON keys and the severity values are machine-parsed ASCII
-protocol: never translate them, whatever language you review in; string values may be in any
-language.
+Your entire final message must be exactly one fenced ```json code block containing a
+completion receipt object — no prose before or after it. Set `status` to the exact ASCII value
+`completed` and `findings` to the finding array. Nothing qualifies after a genuine pass =
+`{"status":"completed","findings":[]}`; never return a bare empty array. The JSON keys,
+`completed`, and the severity values are machine-parsed ASCII protocol: never translate them,
+whatever language you review in; string values may be in any language. The `findings` array
+uses this schema:
 
 ```json
-[
-  {
+{
+  "status": "completed",
+  "findings": [
+    {
     "severity": "critical|major|minor|nit",
     "title": "<one-line title>",
     "file": "<repo-relative path>",
@@ -51,8 +55,9 @@ language.
     "evidence": "<the wrapper defect, quoted: the bypass, missing forward, or divergence window>",
     "why": "<the concrete failure scenario: recursion, stale answer, leaked resource>",
     "suggestion": "<smallest viable fix>"
-  }
-]
+    }
+  ]
+}
 ```
 
 Severity: `critical` = data loss/corruption/security; `major` = wrong behavior users will hit;

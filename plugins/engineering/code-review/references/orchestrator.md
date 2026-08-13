@@ -48,15 +48,28 @@ known-issues list to suppress (may be "none").
 ## Resuming (only when your launch prompt says RESUME)
 
 If your launch prompt marks this as a resume, the files under `RUN_DIR/` are authoritative
-prior work — never redo it. `prompts/<angle>.md` already concretized; each
-`out/candidates-<angle>.json` (or `candidates-<angle>-<slice>.json`) is that angle's
-completed reviewer output — treat the angle as dispatched and NEVER re-dispatch it;
-`out/verdicts-<n>.json` are completed verifier batches; `out/findings.json`, if present, is
-the final verified findings array — go straight to Step 4 and report from it. Start at the
-first step whose checkpoint is missing, with the remaining budget.
+prior work — never redo it. `review-plan.json` is the persisted first-wave task list, with its
+immutable `requested_angles` plus each task's `id`, `angle`, and concrete prompt path. A ready
+plan is immutable; a draft plan must be finalized per Step 2 before dispatch. Then run:
 
-Re-running `findings.sh prepare` is the cheapest way to see where verification stands: it
-preserves existing candidate numbering and finished batches, and prints exactly which
+```
+PLUGIN_ROOT/scripts/findings.sh pending --run-dir RUN_DIR
+```
+
+It validates the plan and returns only task IDs without a valid completion receipt. A valid
+`out/candidates-<task-id>.json` has `{"status":"completed","findings":[...]}` and proves that
+exact task finished, including when `findings` is empty — NEVER re-dispatch it. For backward
+compatibility, a legacy checkpoint containing a bare JSON array also counts as completed. If
+an older run has no plan, the helper reconstructs one from its persisted launch prompt and base
+prompts; legacy sliced runs fail closed because their original slice scope cannot be recovered
+safely. A missing, malformed, or non-completed receipt remains pending. Dispatch exactly the returned
+IDs, using their `prompt` paths from the plan. `out/verdicts-<n>.json` are completed verifier
+batches; `out/findings.json`, if present, is the final verified findings array — go straight to
+Step 4 and report from it.
+
+Re-running `findings.sh prepare` is the cheapest way to see where verification stands: it first
+refuses to proceed unless every task in `review-plan.json` has a completed receipt, then
+preserves existing candidate numbering and finished batches and prints exactly which
 `verify-input-<n>.json` files still need a verifier.
 
 ## Step 1 — Complete the review packet
@@ -83,12 +96,33 @@ requires judgment, batching the file reads each task needs into a single message
 
 `RUN_DIR/prompts/<angle>.md` already exists for every angle this round — the launcher
 concretized the templates (packet path, how to read the packet, repo root, known issues) at
-zero token cost, `sweep.md` included. Never read the templates or rewrite these files; only
-if a prompt file is missing (launcher warned about an unknown angle) do you build that one
+zero token cost, `sweep.md` included. Never read the templates or rewrite these base files;
+only if a prompt file is missing (launcher warned about an unknown angle) do you build that one
 yourself from `PLUGIN_ROOT/references/angles/<angle>.md`.
 
-Dispatch one subagent per angle with the prompt:
-"Read and execute the instructions in <absolute path to the angle prompt file>."
+`RUN_DIR/review-plan.json` initially records immutable `requested_angles` and one task per
+requested angle. The launcher marks it `ready` for a normal diff and `draft` when the diff
+exceeds the large-diff threshold. If it is draft, apply the large-diff rule below before the
+first review dispatch. Never change `requested_angles`. For every split angle,
+write one complete `prompts/<angle>-<slice#>.md` per slice by copying the base
+prompt and appending the slice file restriction, then atomically replace that angle's base task
+with the slice tasks and set `status` to `ready` in the same final Write. Each task has exactly:
+
+```json
+{"id":"correctness-1","angle":"correctness","prompt":"/absolute/path/prompts/correctness-1.md"}
+```
+
+Every requested angle must have exactly its base task or one-or-more `<angle>-<slice#>` tasks;
+never omit or relabel an angle. After the plan reaches `ready` it is immutable: never re-split,
+rename, add, or remove first-wave tasks during resume. A resume that finds `status: draft` must
+finalize the split plan
+before dispatching anything; no completed receipt can legitimately exist for a draft plan. Run
+`findings.sh pending --run-dir RUN_DIR` before every dispatch wave and dispatch exactly the
+returned task IDs. A task absent from that output is completed work even when its findings
+array is empty.
+
+Dispatch one subagent per pending task with the prompt:
+"Read and execute the instructions in <absolute prompt path from review-plan.json>."
 
 Dispatch every subagent **synchronously** (a foreground tool call whose result you wait for
 in the same turn) — NEVER as a background task. You run in a headless session: background
@@ -96,11 +130,16 @@ tasks still pending when your turn ends are terminated wholesale, killing the re
 mid-run and truncating the whole round. Parallelism comes from issuing multiple foreground
 dispatches in one message, not from backgrounding.
 
-**Checkpoint each result** — as each reviewer returns, write its JSON candidate array
-verbatim to `RUN_DIR/out/candidates-<angle>.json` (slices:
-`candidates-<angle>-<slice#>.json`) before dispatching more or analyzing the content. An
-angle that ran inline (fallback) or returned zero candidates still gets its file (`[]` when
-empty) — file presence is the "this angle is done" marker a resume relies on.
+**Checkpoint each result** — as each reviewer returns, extract the single JSON payload from
+its fenced block and write the raw completion receipt to
+`RUN_DIR/out/candidates-<task-id>.json` before dispatching more or analyzing the content. Do
+not write the Markdown fences. (`findings.sh` accepts fenced checkpoints defensively, but raw
+JSON is the canonical artifact.) Every new checkpoint must be
+`{"status":"completed","findings":[...]}`. A successful task with zero candidates therefore
+writes the explicit non-empty receipt `{"status":"completed","findings":[]}`; that completed
+status, not finding count, is the "this task is done" marker a resume relies on. The inline
+fallback must emit and checkpoint the same receipt. Never replace a valid completed receipt
+during resume.
 
 **Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the packet's
 diff section exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
@@ -132,14 +171,14 @@ a batch before starting the next; if 0, dispatch everything at once. Launch each
 
 **Reviewer failure fallback** — if a dispatch still fails after its single retry (subagent
 error, usage/quota limit), do NOT drop the angle: execute it yourself, inline — read its
-prompt file and produce the same JSON candidate array — and record in one line that the angle
-ran inline. An angle covered inline beats an angle silently skipped.
+prompt file and produce the same JSON completion receipt — and record in one line that the
+angle ran inline. An angle covered inline beats an angle silently skipped.
 
 ## Step 3 — Verify every candidate
 
 Normalizing paths, numbering candidates and splitting them into verifier batches is
-bookkeeping, not judgement — do NOT do it by hand. Once every angle's
-`out/candidates-*.json` exists, run one command:
+bookkeeping, not judgement — do NOT do it by hand. Once `findings.sh pending` returns `[]`,
+run one command:
 
 ```
 PLUGIN_ROOT/scripts/findings.sh prepare --run-dir RUN_DIR
@@ -212,12 +251,14 @@ ruled on (an unverified candidate is never promoted).
 Adversarial rounds get one extra pass hunting only for what the first wave missed.
 `RUN_DIR/prompts/sweep.md` is pre-built like the other angle prompts except for one
 placeholder: replace `{{VERIFIED_FINDINGS}}` with one line per surviving candidate
-(`<file>:<line> — <title>`, or "none") and change nothing else in the file. Dispatch it once
-(`reviewer-deep`, opus tier), checkpoint its result to
-`out/candidates-sweep.json`, then re-run `findings.sh prepare` (it picks the new file up
-automatically and renumbers everything) and verify the batches that changed exactly as in
-Step 3. This dispatch sits outside the 12-reviewer budget: skip it only in non-adversarial
-rounds, never for budget reasons.
+(`<file>:<line> — <title>`, or "none") and change nothing else in the file. Before dispatch,
+append exactly one task `{id: "sweep", angle: "sweep", prompt: "<absolute sweep prompt>"}` to
+the ready `review-plan.json` if it is not already present. This is the sole allowed plan change
+after first-wave finalization. Then run `findings.sh pending`: dispatch sweep only when its ID
+is returned, checkpoint its completion receipt to `out/candidates-sweep.json`, and re-run
+`findings.sh prepare` (it picks the planned task up and preserves existing numbering). Verify
+the batches that changed exactly as in Step 3. This dispatch sits outside the 12-reviewer
+budget: skip it only in non-adversarial rounds, never for budget reasons.
 
 ## Step 4 — Final report
 

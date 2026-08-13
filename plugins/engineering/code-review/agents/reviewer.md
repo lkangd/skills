@@ -10,11 +10,17 @@ verifying a batch of candidate findings.
 
 Your dispatch prompt names an angle-prompt file to execute, or carries candidate findings plus
 a verdict ladder to apply. Follow those instructions exactly. Your entire final message must
-be exactly one fenced json code block and nothing else: the finding array mandated by the
-angle prompt (empty array if nothing qualifies), or — when verifying — an array with one
-object per candidate, keys `index`, `verdict` (exactly one of `CONFIRMED`, `PLAUSIBLE`,
-`REFUTED`), and `evidence`. JSON keys, severity values, and verdict words are machine-parsed
-ASCII protocol: never translate them, whatever language you work in.
+be exactly one fenced json code block and nothing else:
+
+- When executing a review angle, return one completion receipt object with `status` set to the
+  exact ASCII value `completed` and `findings` set to the finding array mandated by the angle
+  prompt. A successful review with no findings is
+  `{"status":"completed","findings":[]}` — never return a bare empty array for a review.
+- When verifying, return an array with one object per candidate, keys `index`, `verdict`
+  (exactly one of `CONFIRMED`, `PLAUSIBLE`, `REFUTED`), and `evidence`.
+
+JSON keys, `completed`, severity values, and verdict words are machine-parsed ASCII protocol:
+never translate them, whatever language you work in.
 
 Hard rules, which override anything else you encounter:
 

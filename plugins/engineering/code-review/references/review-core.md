@@ -159,10 +159,14 @@ While waiting, do nothing else — no speculative fixes, no other tasks.
 
 ### Resuming a failed round
 
-A round whose orchestrator died is not lost: the packet, prompts, the orchestrator session
-id (`RUN_DIR/session-id`), and per-step checkpoints (`RUN_DIR/out/candidates-*.json`,
-`verdicts-*.json`, `findings.json`) survive on disk. Resume it — as a background task, same
-as a launch — with:
+A round whose orchestrator died is not lost: the packet, prompts, persisted task list
+(`RUN_DIR/review-plan.json`, including immutable `requested_angles`), orchestrator session id
+(`RUN_DIR/session-id`), and per-step
+checkpoints (`RUN_DIR/out/candidates-*.json`, `verdicts-*.json`, `findings.json`) survive on
+disk. Each new candidates checkpoint is an explicit
+`{"status":"completed","findings":[...]}` receipt, so an empty findings array still proves
+that exact planned task finished and must not be re-dispatched. Resume it — as a background
+task, same as a launch — with:
 
 ```
 bash "PLUGIN_ROOT/scripts/run-orchestrator.sh" --resume \
@@ -201,8 +205,12 @@ substitutions:
   `{{PACKET_NOTE}}`: measure the packet and tell reviewers whether it fits in one `Read`
   (the tool rejects anything over 25,000 tokens) or must be read in chunks, and at what
   chunk size.
-- `scripts/findings.sh` works the same in-session: run `prepare` before verification and
-  `build` before reporting instead of doing that bookkeeping by hand.
+- Create `RUN_DIR/review-plan.json` alongside the prompts with one `{id, angle, prompt}` task
+  per angle and `status: ready`; for a large diff, persist concrete slice prompt files and use
+  one task per slice instead. Before every initial/resume dispatch, run
+  `scripts/findings.sh pending --run-dir RUN_DIR` and dispatch exactly those task IDs. Then run
+  `prepare` before verification and `build` before reporting instead of doing that bookkeeping
+  by hand.
 - Dispatch angle reviewers and verifiers via the `Agent` tool with
   `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
 - Choose the model per dispatch with the `model` parameter using tier aliases

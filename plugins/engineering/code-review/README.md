@@ -78,7 +78,9 @@ orchestrator session, and acts on the consolidated result.
      choosing the model tier by task complexity (opus = bug-hunting angles, sonnet = cleanup
      and moderate angles), batched by `concurrency` (`-c=N` per run). Reviewers are
      **recall-biased**: they pass every candidate with a nameable failure scenario through
-     instead of self-censoring — filtering is the verify pass's job;
+     instead of self-censoring — filtering is the verify pass's job. Every reviewer returns a
+     `{"status":"completed","findings":[...]}` receipt; an empty `findings` array explicitly
+     records a successful zero-finding review, so interrupted runs never repeat that angle;
    - **verifies** every candidate with independent verifier subagents that return
      `CONFIRMED` / `PLAUSIBLE` / `REFUTED` per candidate (PLAUSIBLE is the default; REFUTED
      requires evidence constructible from the code) and drops only the refuted ones;
@@ -153,13 +155,18 @@ orchestrator's writes.
 A review round is 10–40+ minutes of reviewer tokens; an API error in the last turn must not
 discard them. Three layers ensure it doesn't:
 
-- The orchestrator **checkpoints every subagent result** to `RUN_DIR/out/` the moment it
-  arrives (`candidates-<angle>.json`, `verdicts-<n>.json`, and the final `findings.json`) —
-  nothing important lives only in session context.
+- The launcher persists `RUN_DIR/review-plan.json`, and the orchestrator **checkpoints every
+  subagent result** to `RUN_DIR/out/` the moment it arrives
+  (`candidates-<task-id>.json`, `verdicts-<n>.json`, and the final `findings.json`). Resume runs
+  `findings.sh pending` against that plan, so completed zero-finding tasks are skipped while
+  missing or invalid task receipts remain pending.
 - The launcher pins the orchestrator's `--session-id` (saved to `RUN_DIR/session-id`) and,
   when the session dies without a parseable report, **auto-resumes it once** — the resumed
   session continues at the first incomplete step instead of starting over.
 - `/code-review resume [<run-dir>]` re-enters a failed round later — e.g. after a usage-limit
   reset, from a brand-new session. It resumes the original orchestrator session first; if
   that transcript is unusable (e.g. it reproduces the fatal API error), it falls back to a
-  fresh salvage session that trusts the on-disk checkpoints and re-runs only what is missing.
+  fresh salvage session that trusts the on-disk plan and checkpoints and re-runs only what is
+  missing. Pre-plan runs with unsliced legacy checkpoints are migrated from their persisted
+  launch prompt; legacy sliced runs fail closed because their original slice scope is not
+  recoverable.

@@ -31,16 +31,22 @@ Focus on what a first pass tends to miss:
 ## Output format (mandatory)
 
 Surface up to 8 additional candidates, most severe first — each must name a defect NOT on the
-list above. If nothing new, return the empty array — do not pad.
+list above. If nothing new, return a completed receipt with an empty `findings` array — do not
+pad.
 
-Your entire final message must be exactly one fenced ```json code block containing an array
-of finding objects — no prose before or after it. The JSON keys and the severity values are
-machine-parsed ASCII protocol: never translate them, whatever language you review in; string
-values may be in any language.
+Your entire final message must be exactly one fenced ```json code block containing a
+completion receipt object — no prose before or after it. Set `status` to the exact ASCII value
+`completed` and `findings` to the finding array. Nothing qualifies after a genuine pass =
+`{"status":"completed","findings":[]}`; never return a bare empty array. The JSON keys,
+`completed`, and the severity values are machine-parsed ASCII protocol: never translate them,
+whatever language you review in; string values may be in any language. The `findings` array
+uses this schema:
 
 ```json
-[
-  {
+{
+  "status": "completed",
+  "findings": [
+    {
     "severity": "critical|major|minor|nit",
     "title": "<one-line title>",
     "file": "<repo-relative path>",
@@ -48,8 +54,9 @@ values may be in any language.
     "evidence": "<what the code does, quoting the relevant lines>",
     "why": "<the concrete failure scenario or cost>",
     "suggestion": "<smallest viable fix>"
-  }
-]
+    }
+  ]
+}
 ```
 
 Severity: `critical` = data loss/corruption/security; `major` = wrong behavior users will hit;

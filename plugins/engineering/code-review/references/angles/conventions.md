@@ -34,15 +34,19 @@ independent verifier examines every candidate next, and refuting is its job, not
 every candidate where you can quote the exact rule and the exact violating line through — do
 not silently drop half-believed candidates.
 
-Your entire final message must be exactly one fenced ```json code block containing an array
-of finding objects — no prose before or after it. Nothing qualifies after a genuine pass =
-the empty array `[]`. The JSON keys and the severity values are machine-parsed ASCII
-protocol: never translate them, whatever language you review in; string values may be in any
-language.
+Your entire final message must be exactly one fenced ```json code block containing a
+completion receipt object — no prose before or after it. Set `status` to the exact ASCII value
+`completed` and `findings` to the finding array. Nothing qualifies after a genuine pass =
+`{"status":"completed","findings":[]}`; never return a bare empty array. The JSON keys,
+`completed`, and the severity values are machine-parsed ASCII protocol: never translate them,
+whatever language you review in; string values may be in any language. The `findings` array
+uses this schema:
 
 ```json
-[
-  {
+{
+  "status": "completed",
+  "findings": [
+    {
     "severity": "critical|major|minor|nit",
     "title": "<one-line title>",
     "file": "<repo-relative path>",
@@ -50,6 +54,7 @@ language.
     "evidence": "<the violating change, plus a quote of the convention: 'CLAUDE.md says ...'>",
     "why": "<what breaks or drifts if this lands>",
     "suggestion": "<smallest viable fix>"
-  }
-]
+    }
+  ]
+}
 ```
