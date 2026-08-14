@@ -49,9 +49,11 @@ known-issues list to suppress (may be "none").
 ## Resuming (only when your launch prompt says RESUME)
 
 If your launch prompt marks this as a resume, the files under `RUN_DIR/` are authoritative
-prior work — never redo it. `review-plan.json` is the persisted first-wave task list, with its
-immutable `requested_angles` plus each task's `id`, `angle`, and concrete prompt path. A ready
-plan is immutable; a draft plan must be finalized per Step 2 before dispatch. Then run:
+prior work — never redo it. `review-plan.json` is the persisted task list, with its immutable
+`requested_angles`, the later waves this round declared, and each task's `id`, `angle`, and
+`wave`. A task's prompt is always `RUN_DIR/prompts/<task-id>.md` — the plan does not store it.
+A ready plan is immutable apart from appending declared later-wave tasks; a draft plan must be
+finalized per Step 2 before dispatch. Then run:
 
 ```
 PLUGIN_ROOT/scripts/findings.sh pending --run-dir RUN_DIR
@@ -66,7 +68,7 @@ prompts; legacy sliced runs fail closed because their original slice scope canno
 safely. A missing, malformed, or non-completed receipt remains pending. If a successful reviewer left
 a malformed checkpoint, delete that invalid checkpoint and treat it as a failed dispatch:
 re-dispatch once, then use the inline fallback if the replacement is still malformed. Dispatch
-exactly the returned IDs, using their `prompt` paths from the plan. `out/verdicts-<n>.json` are completed verifier
+exactly the returned IDs, each with its `RUN_DIR/prompts/<task-id>.md`. `out/verdicts-<n>.json` are completed verifier
 batches; `out/findings.json`, if present, is the final verified findings array — go straight to
 Step 4 and report from it.
 
@@ -102,32 +104,34 @@ validated and concretized the templates (packet path, how to read the packet, re
 issues) at zero token cost, `sweep.md` included. Never read the templates or rewrite these base
 files. A missing base prompt is a corrupt launch artifact: stop rather than inventing one.
 
-`RUN_DIR/review-plan.json` initially records immutable `requested_angles` and one task per
-requested angle. The launcher marks it `ready` for a normal tracked diff and `draft` when the
+`RUN_DIR/review-plan.json` initially records immutable `requested_angles`, the `late_waves`
+this round declared (Step 3.5's sweep, when it applies), and one wave-1 task per requested
+angle. The launcher marks it `ready` for a normal tracked diff and `draft` when the
 diff exceeds the large-diff threshold or the target may gain untracked-file content in Step 1.
 If it is draft, judge the completed packet against the large-diff rule below before the first
 review dispatch: either replace split angles with slice tasks, or keep the base tasks when no
-split is needed, then set `status` to `ready` atomically. Never change `requested_angles`. For
-every split angle,
+split is needed, then set `status` to `ready` atomically. Never change `requested_angles` or
+`late_waves`. For every split angle,
 write one complete `prompts/<angle>-<slice#>.md` per slice by copying the base
 prompt and appending the slice file restriction, then atomically replace that angle's base task
 with the slice tasks and set `status` to `ready` in the same final Write. Each task has exactly:
 
 ```json
-{"id":"correctness-1","angle":"correctness","prompt":"/absolute/path/prompts/correctness-1.md"}
+{"id":"correctness-1","angle":"correctness","wave":1}
 ```
 
-Every requested angle must have exactly its base task or one-or-more `<angle>-<slice#>` tasks;
-never omit or relabel an angle. After the plan reaches `ready` it is immutable: never re-split,
-rename, add, or remove first-wave tasks during resume. A resume that finds `status: draft` must
-finalize the split plan
+A task's prompt file is always `RUN_DIR/prompts/<task-id>.md`; the plan never stores that path.
+Every requested angle must have exactly its base task or one-or-more `<angle>-<slice#>` tasks in
+wave 1; never omit or relabel an angle. After the plan reaches `ready` it is immutable except
+for appending tasks belonging to a declared late wave: never re-split, rename, add, or remove
+wave-1 tasks during resume. A resume that finds `status: draft` must finalize the split plan
 before dispatching anything; no completed receipt can legitimately exist for a draft plan. Run
 `findings.sh pending --run-dir RUN_DIR` before every dispatch wave and dispatch exactly the
 returned task IDs. A task absent from that output is completed work even when its findings
 array is empty.
 
 Dispatch one subagent per pending task with the prompt:
-"Read and execute the instructions in <absolute prompt path from review-plan.json>."
+"Read and execute the instructions in RUN_DIR/prompts/<task-id>.md." (absolute path)
 
 Dispatch every subagent **synchronously** (a foreground tool call whose result you wait for
 in the same turn) — NEVER as a background task. You run in a headless session: background
@@ -262,8 +266,9 @@ Adversarial rounds get one extra pass hunting only for what the first wave misse
 `RUN_DIR/prompts/sweep.md` is pre-built like the other angle prompts except for one
 placeholder: replace `{{VERIFIED_FINDINGS}}` with one line per surviving candidate
 (`<file>:<line> — <title>`, or "none") and change nothing else in the file. Before dispatch,
-append exactly one task `{id: "sweep", angle: "sweep", prompt: "<absolute sweep prompt>"}` to
-the ready `review-plan.json` if it is not already present. This is the sole allowed plan change
+append exactly one task `{id: "sweep", angle: "sweep", wave: 2}` to the ready
+`review-plan.json` if it is not already present — the launcher declared that wave in
+`late_waves`, and appending a task to a declared late wave is the only plan change allowed
 after first-wave finalization. Then run `findings.sh pending`: dispatch sweep only when its ID
 is returned, checkpoint its completion receipt to `out/candidates-sweep.json`, and re-run
 `findings.sh prepare` (it picks the planned task up and preserves existing numbering). Verify

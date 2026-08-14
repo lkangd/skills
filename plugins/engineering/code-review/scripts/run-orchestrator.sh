@@ -94,6 +94,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "not inside a
 PROMPT_FILE="$RUN_DIR/orchestrator-prompt.md"
 SESSION_FILE="$RUN_DIR/session-id"
 command -v jq >/dev/null 2>&1 || { echo "jq is required but not on PATH" >&2; exit 1; }
+# shellcheck source=review-plan.sh
+. "$PLUGIN_ROOT/scripts/review-plan.sh" \
+  || { echo "cannot load the review-plan schema helper" >&2; exit 1; }
 
 # A run "has a result" when the latest attempt exited 0 AND left the authoritative payload:
 # out/findings.json (current contract) or a fenced json block in stdout (pre-findings.json
@@ -241,44 +244,56 @@ PACKET_NOTE="$(awk -v lines="$PACKET_LINES" -v bytes="$PACKET_BYTES" 'BEGIN {
 # The Step 3.5 sweep is not in the first-wave review plan but gets the same prompt treatment:
 # everything except {{VERIFIED_FINDINGS}} (runtime data — the findings that survived
 # verification) resolves here, so the orchestrator only fills that one placeholder.
+#
+# {{RECEIPT_CONTRACT}} is the completion-receipt protocol every angle shares verbatim. It lives
+# in one file because findings.sh parses what it mandates: fourteen hand-maintained copies of a
+# machine-read contract is fourteen chances for one of them to drift out of the parser's reach.
+RECEIPT_CONTRACT_FILE="$PLUGIN_ROOT/references/receipt-contract.md"
+[ -s "$RECEIPT_CONTRACT_FILE" ] \
+  || { echo "receipt contract fragment is missing or empty: $RECEIPT_CONTRACT_FILE" >&2; exit 1; }
+RECEIPT_CONTRACT="$(cat "$RECEIPT_CONTRACT_FILE")" || exit 1
+# Every placeholder a template may use. A template carrying one that is not here reaches the
+# reviewer as literal `{{…}}` text — for the receipt contract that is a reviewer with no stated
+# output format and a round whose checkpoints no parser accepts. Checked against the template
+# rather than the result, so `{{` appearing inside substituted content (known issues are free
+# text) cannot fail a launch. {{VERIFIED_FINDINGS}} is the one the orchestrator fills later.
+KNOWN_PLACEHOLDERS='\{\{(PACKET_PATH|PACKET_NOTE|REPO_ROOT|KNOWN_ISSUES|RECEIPT_CONTRACT|VERIFIED_FINDINGS)\}\}'
 PROMPT_ANGLE_ARR=("${ANGLE_ARR[@]}")
 case ",${ANGLES//[[:space:]]/}," in *,design,*) PROMPT_ANGLE_ARR+=("sweep") ;; esac
 for a in "${PROMPT_ANGLE_ARR[@]}"; do
   tpl="$PLUGIN_ROOT/references/angles/$a.md"
+  unknown="$(grep -oE '\{\{[A-Za-z0-9_]+\}\}' "$tpl" | sort -u | grep -vE "^$KNOWN_PLACEHOLDERS\$")"
+  [ -z "$unknown" ] \
+    || { echo "angle template $a.md uses an unknown placeholder: $(printf '%s' "$unknown" | tr '\n' ' ')" >&2; exit 1; }
   c="$(cat "$tpl")"
   c="${c//'{{PACKET_PATH}}'/$PACKET}"
   c="${c//'{{PACKET_NOTE}}'/$PACKET_NOTE}"
   c="${c//'{{REPO_ROOT}}'/$REPO_ROOT}"
   c="${c//'{{KNOWN_ISSUES}}'/$KNOWN_ISSUES}"
+  c="${c//'{{RECEIPT_CONTRACT}}'/$RECEIPT_CONTRACT}"
   printf '%s\n' "$c" > "$RUN_DIR/prompts/$a.md" || exit 1
 done
 
 # Persist the first-wave task list before any reviewer can run. Resume dispatch is based on
 # this plan plus completed receipts, never on whether an angle produced findings. A large-diff
 # draft is finalized with concrete slice tasks before its first dispatch.
-PLAN_TASKS='[]'
-REQUESTED_ANGLES='[]'
 PLAN_STATUS="ready"
 if [ "$(wc -l < "$RUN_DIR/raw_diff.txt" | tr -d ' ')" -gt 1500 ]; then
   PLAN_STATUS="draft"
 else
   case "$DIFF_ARGS" in HEAD|HEAD\ --*) PLAN_STATUS="draft" ;; esac
 fi
-for a in "${ANGLE_ARR[@]}"; do
-  a="${a//[[:space:]]/}"
-  [ -n "$a" ] || continue
-  REQUESTED_ANGLES="$(jq -cn --argjson angles "$REQUESTED_ANGLES" --arg angle "$a" \
-    '$angles + [$angle]')" || exit 1
-  PLAN_TASKS="$(jq -cn --argjson tasks "$PLAN_TASKS" --arg id "$a" --arg angle "$a" \
-    --arg prompt "$RUN_DIR/prompts/$a.md" \
-    '$tasks + [{id: $id, angle: $angle, prompt: $prompt}]')" || exit 1
-done
-PLAN_TEMP="$RUN_DIR/review-plan.json.tmp"
-jq -n --arg status "$PLAN_STATUS" --argjson requested_angles "$REQUESTED_ANGLES" \
-  --argjson tasks "$PLAN_TASKS" \
-  '{version: 1, status: $status, requested_angles: $requested_angles, tasks: $tasks}' \
-  > "$PLAN_TEMP" || exit 1
-mv "$PLAN_TEMP" "$RUN_DIR/review-plan.json" || exit 1
+REQUESTED_ANGLES="$(printf '%s' "$ANGLES" | tr ',' '\n' | jq -R . | jq -sc .)" || exit 1
+# Later waves are declared here, at launch, so the orchestrator can only append tasks to a
+# phase this round actually planned for — the sweep is one such wave, not a hard-coded name.
+PLAN_LATE_WAVES='[]'
+case ",${ANGLES//[[:space:]]/}," in
+  *,design,*) PLAN_LATE_WAVES='[{"wave":2,"angles":["sweep"]}]' ;;
+esac
+PLAN_TASKS="$(review_plan_tasks "$REQUESTED_ANGLES" 1)" || exit 1
+PLAN_DOCUMENT="$(review_plan_document "$PLAN_STATUS" "$REQUESTED_ANGLES" "$PLAN_LATE_WAVES" \
+  "$PLAN_TASKS")" || exit 1
+review_plan_install "$PLAN_DOCUMENT" "$RUN_DIR/review-plan.json" || exit 1
 LAUNCH_PARAMS_TEMP="$RUN_DIR/launch-params.json.tmp"
 jq -n --argjson requested_angles "$REQUESTED_ANGLES" \
   '{version: 1, requested_angles: $requested_angles}' > "$LAUNCH_PARAMS_TEMP" || exit 1

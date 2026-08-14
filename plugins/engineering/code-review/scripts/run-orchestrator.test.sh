@@ -94,16 +94,42 @@ git -C "$REPO" commit -qm small
 SMALL_RUN="$TMP_ROOT/small-run"
 run_launcher "$SMALL_RUN"
 assert_json "$SMALL_RUN/review-plan.json" '
-  .version == 1 and .status == "ready"
+  .version == 2 and .status == "ready"
   and .requested_angles == ["correctness", "callers"]
+  and .late_waves == []
   and [.tasks[].id] == ["correctness", "callers"]
-  and all(.tasks[]; (.prompt | startswith("/")) and (.angle | type == "string"))'
-while IFS= read -r prompt; do
-  [ -r "$prompt" ] || fail "small-diff plan references a missing prompt: $prompt"
+  and all(.tasks[]; (.angle | type == "string") and .wave == 1)
+  and all(.tasks[]; has("prompt") | not)'
+# The plan stores no prompt path; every task ID must still resolve to a concretized prompt.
+while IFS= read -r task_id; do
+  [ -r "$SMALL_RUN/prompts/$task_id.md" ] \
+    || fail "small-diff plan task has no prompt: $task_id"
 done <<EOF
-$(jq -r '.tasks[].prompt' "$SMALL_RUN/review-plan.json")
+$(jq -r '.tasks[].id' "$SMALL_RUN/review-plan.json")
 EOF
+# An unresolved placeholder reaches the reviewer as template text — for the receipt contract
+# that is a reviewer with no output format and a checkpoint no parser accepts.
+for prompt in "$SMALL_RUN"/prompts/*.md; do
+  ! grep -q '{{' "$prompt" \
+    || fail "concretized prompt kept an unresolved placeholder: $prompt"
+  grep -Fq '{"status":"completed","findings":[]}' "$prompt" \
+    || fail "concretized prompt lost the shared receipt contract: $prompt"
+done
 assert_json "$SMALL_RUN/out/orchestrator.exit" '. == 0'
+
+# A round that includes `design` declares the Step 3.5 sweep as a late wave up front, and its
+# prompt keeps exactly one runtime placeholder for the orchestrator to fill.
+SWEEP_RUN="$TMP_ROOT/sweep-run"
+run_launcher "$SWEEP_RUN" "HEAD^..HEAD" "correctness, design"
+assert_json "$SWEEP_RUN/review-plan.json" '
+  .late_waves == [{wave: 2, angles: ["sweep"]}]
+  and all(.tasks[]; .wave == 1)
+  and ([.tasks[].angle] | index("sweep")) == null'
+[ -r "$SWEEP_RUN/prompts/sweep.md" ] || fail "design round did not pre-build the sweep prompt"
+grep -q '{{VERIFIED_FINDINGS}}' "$SWEEP_RUN/prompts/sweep.md" \
+  || fail "sweep prompt lost its runtime placeholder"
+[ "$(grep -c '{{' "$SWEEP_RUN/prompts/sweep.md")" = "1" ] \
+  || fail "sweep prompt has placeholders beyond the runtime one"
 
 CHECKPOINT_RUN="$TMP_ROOT/checkpoint-run"
 run_launcher "$CHECKPOINT_RUN" "HEAD^..HEAD" "correctness" "$CHECKPOINT_RUNNER"
@@ -147,7 +173,7 @@ git -C "$REPO" commit -qm large
 LARGE_RUN="$TMP_ROOT/large-run"
 run_launcher "$LARGE_RUN"
 assert_json "$LARGE_RUN/review-plan.json" '
-  .version == 1 and .status == "draft"
+  .version == 2 and .status == "draft"
   and .requested_angles == ["correctness", "callers"]
   and [.tasks[].id] == ["correctness", "callers"]'
 if bash "$SCRIPT_DIR/findings.sh" pending --run-dir "$LARGE_RUN" \

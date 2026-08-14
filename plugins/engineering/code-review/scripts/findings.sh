@@ -44,6 +44,8 @@ die() { echo "findings.sh: $1" >&2; exit "${2:-1}"; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not on PATH"
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)" || die "cannot resolve plugin root"
+# shellcheck source=review-plan.sh
+. "$PLUGIN_ROOT/scripts/review-plan.sh" || die "cannot load the review-plan schema helper"
 
 # jq helpers shared by both subcommands. Two things need care against the Python reference
 # these were ported from: jq's sort_by breaks ties by comparing the values themselves, where
@@ -106,6 +108,7 @@ requested_angles_from_launch() {
   local angles requested='[]' angle
   if [ -r "$launch_params" ]; then
     jq -ce 'if type == "object" and .version == 1 and (.requested_angles | type) == "array"
+        and all(.requested_angles[]; type == "string")
       then .requested_angles else error("invalid launch parameters") end' "$launch_params"
     return
   fi
@@ -122,79 +125,190 @@ requested_angles_from_launch() {
   printf '%s\n' "$requested"
 }
 
+known_angles_json() {
+  local prompt
+  for prompt in "$PLUGIN_ROOT"/references/angles/*.md; do
+    [ -e "$prompt" ] || continue
+    basename "$prompt" .md
+  done | jq -R . | jq -s .
+}
+
+# A run that predates review-plan.json: rebuild the plan the launcher would have written from
+# the launch metadata it did persist. Sliced runs fail closed — their slice scope only ever
+# existed in the dead session's context.
 migrate_legacy_plan() {
-  local plan="$RUN_DIR/review-plan.json"
-  local tasks='[]' requested angle prompt status='ready' f temp
+  local requested tasks late_waves='[]' status='ready' angle f document
   requested="$(requested_angles_from_launch)" \
     || die "review-plan.json missing and launch metadata is unavailable"
 
   while IFS= read -r angle; do
-    angle="${angle//[[:space:]]/}"
     [ -n "$angle" ] || continue
     for f in "$OUTDIR/candidates-$angle-"[0-9]*.json; do
       [ -e "$f" ] || continue
       die "legacy sliced checkpoints cannot be migrated safely — resume with the plugin version that created this run"
     done
-    prompt="$RUN_DIR/prompts/$angle.md"
-    [ -r "$prompt" ] || die "legacy angle prompt missing: $prompt"
-    tasks="$(jq -cn --argjson tasks "$tasks" --arg id "$angle" --arg angle "$angle" \
-      --arg prompt "$prompt" '$tasks + [{id: $id, angle: $angle, prompt: $prompt}]')" \
-      || die "cannot migrate review task $angle"
+    [ -r "$RUN_DIR/prompts/$angle.md" ] \
+      || die "legacy angle prompt missing: $RUN_DIR/prompts/$angle.md"
   done <<EOF
 $(printf '%s' "$requested" | jq -r '.[]')
 EOF
 
+  tasks="$(review_plan_tasks "$requested" 1)" || die "cannot migrate review tasks"
   if [ -e "$OUTDIR/candidates-sweep.json" ]; then
     [ -r "$RUN_DIR/prompts/sweep.md" ] || die "legacy sweep checkpoint has no prompt: $RUN_DIR/prompts/sweep.md"
-    tasks="$(jq -cn --argjson tasks "$tasks" --arg prompt "$RUN_DIR/prompts/sweep.md" \
-      '$tasks + [{id: "sweep", angle: "sweep", prompt: $prompt}]')" \
-      || die "cannot migrate sweep task"
+    late_waves='[{"wave":2,"angles":["sweep"]}]'
+    tasks="$(jq -cn --argjson tasks "$tasks" --argjson late "$(review_plan_tasks '["sweep"]' 2)" \
+      '$tasks + $late')" || die "cannot migrate the late review wave"
   fi
   if ! compgen -G "$OUTDIR/candidates-*.json" >/dev/null \
     && [ -r "$RUN_DIR/raw_diff.txt" ] \
     && [ "$(wc -l < "$RUN_DIR/raw_diff.txt" | tr -d ' ')" -gt 1500 ]; then
     status='draft'
   fi
-  temp="$plan.tmp"
-  jq -n --arg status "$status" --argjson requested_angles "$requested" --argjson tasks "$tasks" \
-    '{version: 1, status: $status, requested_angles: $requested_angles, tasks: $tasks}' \
-    > "$temp" || die "cannot write migrated review plan"
-  mv "$temp" "$plan" || die "cannot install migrated review plan"
+  document="$(review_plan_document "$status" "$requested" "$late_waves" "$tasks")" \
+    || die "cannot write migrated review plan"
+  review_plan_install "$document" "$RUN_DIR/review-plan.json" \
+    || die "cannot install migrated review plan"
 }
 
+# Version 1 stored each task's prompt path and named the post-verification sweep explicitly.
+# The path is the one thing version 2 drops, so verify it against the canonical derivation
+# once here; after that the plan on disk carries no path to drift.
+upgrade_plan_v1() {
+  local parsed task_id prompt expected physical expected_physical
+  local requested late_angles late_waves='[]' tasks document
+  parsed="$(jq -ce '
+    if type != "object" or .version != 1 then error("expected review plan version 1")
+    elif (.status | type) != "string" then error("expected a plan status")
+    elif (.requested_angles | type) != "array" then error("expected a requested_angles array")
+    elif (.tasks | type) != "array" then error("expected a tasks array")
+    elif any(.tasks[]; ((.id | type) != "string") or ((.angle | type) != "string")
+                       or ((.prompt | type) != "string"))
+      then error("every version 1 task needs id, angle and prompt strings")
+    else . end' "$RUN_DIR/review-plan.json")" || die "cannot parse $RUN_DIR/review-plan.json"
+
+  while IFS=$'\t' read -r task_id prompt; do
+    [ -n "$task_id" ] || continue
+    expected="$RUN_DIR/prompts/$task_id.md"
+    [ "$prompt" != "$expected" ] || continue
+    # Same file reached through a symlinked run dir is the same prompt.
+    physical="$(cd "$(dirname "$prompt")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$prompt")")" \
+      || die "cannot resolve review task prompt: $prompt"
+    expected_physical="$(cd "$(dirname "$expected")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$expected")")" \
+      || die "cannot resolve expected review task prompt: $expected"
+    [ "$physical" = "$expected_physical" ] \
+      || die "review task prompt must match its task ID: $task_id"
+  done <<EOF
+$(printf '%s' "$parsed" | jq -r '.tasks[] | [.id, .prompt] | @tsv')
+EOF
+
+  requested="$(printf '%s' "$parsed" | jq -c '.requested_angles')"
+  # The sweep was the only version 1 task allowed to sit outside requested_angles, and it only
+  # ever ran after the first wave — exactly what wave 2 now means.
+  late_angles="$(printf '%s' "$parsed" | jq -c \
+    '.requested_angles as $requested
+     | [.tasks[].angle | . as $angle | select(($requested | index($angle)) == null)] | unique')" \
+    || die "cannot upgrade $RUN_DIR/review-plan.json"
+  tasks="$(printf '%s' "$parsed" | jq -c \
+    '.requested_angles as $requested
+     | [.tasks[] | . as $t
+        | {id, angle, wave: (if ($requested | index($t.angle)) == null then 2 else 1 end)}]')" \
+    || die "cannot upgrade $RUN_DIR/review-plan.json"
+  if [ "$late_angles" != "[]" ]; then
+    late_waves="$(jq -cn --argjson angles "$late_angles" '[{wave: 2, angles: $angles}]')" \
+      || die "cannot upgrade $RUN_DIR/review-plan.json"
+  fi
+  document="$(review_plan_document \
+    "$(printf '%s' "$parsed" | jq -r '.status')" "$requested" "$late_waves" "$tasks")" \
+    || die "cannot write the upgraded review plan"
+  review_plan_install "$document" "$RUN_DIR/review-plan.json" \
+    || die "cannot install the upgraded review plan"
+}
+
+# Everything structural in one jq pass. The version 1 validator walked the plan with a jq call
+# per task per field, which made the cost of a check its own argument against adding one.
+PLAN_JQ='
+def known_angle: . as $angle | $known_angles | index($angle) != null;
+# A task either covers its whole angle or is slice N of it. This is the only rule about task
+# IDs: the sweep is not a special name here, just a task on a late wave angle.
+def task_id_ok($angle):
+  . == $angle
+  or (startswith($angle + "-") and (.[($angle | length) + 1:] | test("^[1-9][0-9]*$")));
+
+if type != "object" or .version != 2
+  then error("expected review plan version 2")
+elif (.status | type) != "string"
+  then error("expected a plan status")
+elif (.requested_angles | type) != "array" or (.requested_angles | length) == 0
+  then error("expected a non-empty requested_angles array")
+elif (.requested_angles | length) != (.requested_angles | unique | length)
+  then error("requested angles must be unique")
+elif any(.requested_angles[]; (type != "string") or (known_angle | not))
+  then error("requested_angles contains an unknown angle")
+elif (.late_waves | type) != "array"
+  then error("expected a late_waves array")
+elif any(.late_waves[];
+      (type != "object")
+      or ((.wave | type) != "number") or ((.wave | floor) != .wave) or (.wave < 2)
+      or ((.angles | type) != "array") or ((.angles | length) == 0)
+      or any(.angles[]; (type != "string") or (known_angle | not)))
+  then error("late_waves must declare an integer wave above 1 with known angles")
+elif ([.late_waves[].wave] | length) != ([.late_waves[].wave] | unique | length)
+  then error("late wave numbers must be unique")
+elif (.requested_angles - [.late_waves[].angles[]]) != .requested_angles
+  then error("requested_angles must not contain a late-wave angle")
+elif (.tasks | type) != "array" or (.tasks | length) == 0
+  then error("expected a non-empty tasks array")
+elif .status != "ready"
+  then error("review plan is not ready — finalize slicing before dispatch")
+elif ([.tasks[].id] | length) != ([.tasks[].id] | unique | length)
+  then error("task IDs must be unique")
+elif any(.tasks[]; ((.id | type) != "string") or ((.id | test("^[a-z0-9][a-z0-9-]*$")) | not))
+  then error("task IDs must be lowercase kebab-case")
+elif any(.tasks[]; ((.angle | type) != "string") or ((.angle | known_angle) | not))
+  then error("tasks contains an unknown angle")
+elif any(.tasks[]; ((.wave | type) != "number") or ((.wave | floor) != .wave) or (.wave < 1))
+  then error("every task needs an integer wave of 1 or more")
+else . end
+
+| . as $plan
+| ([$plan.late_waves[] | {key: (.wave | tostring), value: .angles}] | from_entries) as $late
+| ([ $plan.tasks[] | . as $t
+     | select($t.wave == 1 and (($plan.requested_angles | index($t.angle)) == null)) ] | first) as $unrequested
+| if $unrequested != null
+  then error("review task angle was not requested: \($unrequested.angle)") else . end
+| ([ $plan.tasks[] | . as $t
+     | select($t.wave > 1 and ((($late[$t.wave | tostring] // []) | index($t.angle)) == null)) ] | first) as $undeclared
+| if $undeclared != null
+  then error("review task angle is not declared for wave \($undeclared.wave): \($undeclared.angle)")
+  else . end
+| ([ $plan.tasks[] | select(. as $t | ($t.id | task_id_ok($t.angle)) | not) ] | first) as $mislabeled
+| if $mislabeled != null
+  then error("review task ID does not match its angle: \($mislabeled.id) -> \($mislabeled.angle)")
+  else . end
+# First-wave completeness stands on its own: a late wave has no tasks until its inputs exist.
+| ([ $plan.requested_angles[]
+     | . as $angle
+     | select(([ $plan.tasks[] | select(.wave == 1 and .angle == $angle) ] | length) == 0) ] | first) as $uncovered
+| if $uncovered != null
+  then error("review plan does not cover requested angle: \($uncovered)") else . end
+| ([ $plan.tasks | group_by([.wave, .angle])[] | . as $group
+     | select(($group | length) > 1 and (([$group[].id] | index($group[0].angle)) != null))
+     | $group[0].angle ] | first) as $mixed
+| if $mixed != null
+  then error("review plan mixes base and sliced tasks for angle: \($mixed)") else . end
+| $plan
+'
+
 review_plan_json() {
-  local plan="$RUN_DIR/review-plan.json" parsed task_count index task_id angle slice_id prompt expected_prompt
-  local prompt_physical expected_physical requested_count requested_index requested_angle matching_ids exact_count
+  local plan="$RUN_DIR/review-plan.json" parsed version task_id
   local launch_requested plan_requested
-  local known_angles
   [ -r "$plan" ] || migrate_legacy_plan
-  known_angles="$(for prompt in "$PLUGIN_ROOT"/references/angles/*.md; do
-    [ -e "$prompt" ] || continue
-    basename "$prompt" .md
-  done | jq -R . | jq -s .)" || die "cannot enumerate review angles"
-  parsed="$(jq -c --argjson known_angles "$known_angles" '
-    def known_angle: . as $angle | $known_angles | index($angle) != null;
-    if type != "object" or .version != 1
-      then error("expected review plan version 1")
-    elif (.requested_angles | type) != "array" or (.requested_angles | length) == 0
-      then error("expected a non-empty requested_angles array")
-    elif ([.requested_angles[]] | length) != ([.requested_angles[]] | unique | length)
-      then error("requested angles must be unique")
-    elif any(.requested_angles[]; ((type != "string") or . == "sweep" or ((. | known_angle) | not)))
-      then error("requested_angles contains an unknown angle")
-    elif (.tasks | type) != "array" or (.tasks | length) == 0
-      then error("expected a non-empty tasks array")
-    elif .status != "ready"
-      then error("review plan is not ready — finalize slicing before dispatch")
-    elif ([.tasks[].id] | length) != ([.tasks[].id] | unique | length)
-      then error("task IDs must be unique")
-    elif any(.tasks[]; ((.id | type) != "string") or (((.id | test("^[a-z0-9][a-z0-9-]*$")) | not)))
-      then error("task IDs must be lowercase kebab-case")
-    elif any(.tasks[]; ((.angle | type) != "string") or ((.prompt | type) != "string"))
-      then error("every task needs angle and prompt strings")
-    elif any(.tasks[]; ((.angle | known_angle) | not))
-      then error("tasks contains an unknown angle")
-    else . end' "$plan")" || die "cannot parse $plan"
+  version="$(jq -r 'if type == "object" then (.version | tostring) else "unknown" end' "$plan")" \
+    || die "cannot parse $plan"
+  [ "$version" != "1" ] || upgrade_plan_v1
+  parsed="$(jq -c --argjson known_angles "$(known_angles_json)" "$PLAN_JQ" "$plan")" \
+    || die "cannot parse $plan"
 
   if [ -r "$RUN_DIR/launch-params.json" ]; then
     launch_requested="$(requested_angles_from_launch)" \
@@ -208,58 +322,23 @@ review_plan_json() {
       || die "review plan requested_angles do not match the persisted launch angles"
   fi
 
-  task_count="$(printf '%s' "$parsed" | jq '.tasks | length')"
-  index=0
-  while [ "$index" -lt "$task_count" ]; do
-    task_id="$(printf '%s' "$parsed" | jq -r ".tasks[$index].id")"
-    angle="$(printf '%s' "$parsed" | jq -r ".tasks[$index].angle")"
-    prompt="$(printf '%s' "$parsed" | jq -r ".tasks[$index].prompt")"
-    if [ "$angle" = "sweep" ]; then
-      [ "$task_id" = "sweep" ] || die "sweep task ID must be sweep"
-      printf '%s' "$parsed" | jq -e '.requested_angles | index("design") != null' >/dev/null \
-        || die "sweep task requires the design angle"
-    else
-      printf '%s' "$parsed" | jq -e --arg angle "$angle" \
-        '.requested_angles | index($angle) != null' >/dev/null \
-        || die "review task angle was not requested: $angle"
-      if [ "$task_id" != "$angle" ]; then
-        case "$task_id" in
-          "$angle"-*) slice_id="${task_id#"$angle"-}" ;;
-          *) die "review task ID does not match its angle: $task_id -> $angle" ;;
-        esac
-        case "$slice_id" in ''|*[!0-9]*|0) die "review task ID does not match its angle: $task_id -> $angle" ;; esac
-      fi
-    fi
-    expected_prompt="$RUN_DIR/prompts/$task_id.md"
-    [ -r "$prompt" ] || die "review task prompt missing: $prompt"
-    prompt_physical="$(cd "$(dirname "$prompt")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$prompt")")" \
-      || die "cannot resolve review task prompt: $prompt"
-    expected_physical="$(cd "$(dirname "$expected_prompt")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$expected_prompt")")" \
-      || die "cannot resolve expected review task prompt: $expected_prompt"
-    [ "$prompt_physical" = "$expected_physical" ] \
-      || die "review task prompt must match its task ID: $task_id"
-    index=$((index + 1))
-  done
-
-  requested_count="$(printf '%s' "$parsed" | jq '.requested_angles | length')"
-  requested_index=0
-  while [ "$requested_index" -lt "$requested_count" ]; do
-    requested_angle="$(printf '%s' "$parsed" | jq -r ".requested_angles[$requested_index]")"
-    matching_ids="$(printf '%s' "$parsed" | jq -c --arg angle "$requested_angle" \
-      '[.tasks[] | select(.angle == $angle) | .id]')"
-    [ "$(printf '%s' "$matching_ids" | jq 'length')" -gt 0 ] \
-      || die "review plan does not cover requested angle: $requested_angle"
-    exact_count="$(printf '%s' "$matching_ids" | jq --arg angle "$requested_angle" \
-      '[.[] | select(. == $angle)] | length')"
-    [ "$exact_count" = "0" ] || [ "$(printf '%s' "$matching_ids" | jq 'length')" = "1" ] \
-      || die "review plan mixes base and sliced tasks for angle: $requested_angle"
-    requested_index=$((requested_index + 1))
-  done
+  # The one plan fact the filesystem owns: a task's prompt is RUN_DIR/prompts/<id>.md, and a
+  # missing one is a corrupt run dir, not work to improvise.
+  while IFS= read -r task_id; do
+    [ -n "$task_id" ] || continue
+    [ -r "$RUN_DIR/prompts/$task_id.md" ] \
+      || die "review task prompt missing: $RUN_DIR/prompts/$task_id.md"
+  done <<EOF
+$(printf '%s' "$parsed" | jq -r '.tasks[].id')
+EOF
   printf '%s\n' "$parsed"
 }
 
-receipt_findings_json() {
-  local file="$1" filter payload first_error
+# One completed receipt, tagged with the angle of the task that produced it. New checkpoints are
+# {"status":"completed","findings":[...]}; legacy bare arrays remain readable so interrupted
+# runs created before the receipt protocol can still resume.
+receipt_payload_json() {
+  local file="$1" angle="$2" filter payload first_error
   filter='
     (if type == "array" then .
      elif type == "object" and .status == "completed" and (.findings | type) == "array"
@@ -267,8 +346,8 @@ receipt_findings_json() {
      else error("not a completed review receipt") end) as $findings
     | if any($findings[]; type != "object")
       then error("review findings must be objects")
-      else $findings end'
-  if first_error="$(jq -c "$filter" "$file" 2>&1)"; then
+      else {angle: $angle, findings: $findings} end'
+  if first_error="$(jq -c --arg angle "$angle" "$filter" "$file" 2>&1)"; then
     printf '%s\n' "$first_error"
     return 0
   fi
@@ -280,41 +359,21 @@ receipt_findings_json() {
     inside == 1 { print }
   ' "$file")"
   if [ -n "$payload" ]; then
-    printf '%s\n' "$payload" | jq -c "$filter"
+    printf '%s\n' "$payload" | jq -c --arg angle "$angle" "$filter"
   else
     printf '%s\n' "$first_error" >&2
     return 1
   fi
 }
 
-pending_json() {
-  local plan="$1" task_count index task_id receipt pending='[]'
-  task_count="$(printf '%s' "$plan" | jq '.tasks | length')"
-  index=0
-  while [ "$index" -lt "$task_count" ]; do
-    task_id="$(printf '%s' "$plan" | jq -r ".tasks[$index].id")"
-    receipt="$OUTDIR/candidates-$task_id.json"
-    if [ ! -r "$receipt" ] || ! receipt_findings_json "$receipt" >/dev/null 2>&1; then
-      pending="$(jq -cn --argjson pending "$pending" --arg task_id "$task_id" \
-        '$pending + [$task_id]')" || die "cannot collect pending task $task_id"
-    fi
-    index=$((index + 1))
-  done
-  printf '%s\n' "$pending"
-}
-
-require_complete_plan() {
-  local plan="$1" pending
-  pending="$(pending_json "$plan")" || exit 1
-  [ "$(printf '%s' "$pending" | jq 'length')" = "0" ] \
-    || die "review tasks incomplete: $(printf '%s' "$pending" | jq -r 'join(", ")')"
-}
-
-# Collect completed receipts in review-plan order. New checkpoints are
-# {"status":"completed","findings":[...]}; legacy bare arrays remain readable so interrupted
-# runs created before the receipt protocol can still resume.
-collect_json() {
-  local plan="$1" task_count index task_id angle receipt items collected='[]' f orphan_id
+# Walk the plan once and answer both questions every command asks of it: which tasks are still
+# pending, and what the finished ones found. Splitting those into separate passes meant parsing
+# each receipt twice per command, and left completion checking able to disagree with collection
+# about the same file.
+PLAN_PENDING='[]'
+PLAN_CANDIDATES='[]'
+collect_receipts() {
+  local plan="$1" task_id angle receipt payload pending='' payloads='' f orphan_id
   for f in "$OUTDIR"/candidates-*.json; do
     [ -e "$f" ] || continue
     orphan_id="$(basename "$f")"
@@ -323,29 +382,44 @@ collect_json() {
     printf '%s' "$plan" | jq -e --arg id "$orphan_id" '.tasks | any(.id == $id)' >/dev/null \
       || die "checkpoint is not listed in review-plan.json: $f"
   done
-  task_count="$(printf '%s' "$plan" | jq '.tasks | length')"
-  index=0
-  while [ "$index" -lt "$task_count" ]; do
-    task_id="$(printf '%s' "$plan" | jq -r ".tasks[$index].id")"
-    angle="$(printf '%s' "$plan" | jq -r ".tasks[$index].angle")"
+
+  while IFS=$'\t' read -r task_id angle; do
+    [ -n "$task_id" ] || continue
     receipt="$OUTDIR/candidates-$task_id.json"
-    items="$(receipt_findings_json "$receipt")" || die "cannot parse $receipt"
-    items="$(printf '%s' "$items" | jq -c --arg angle "$angle" --argjson known "$KNOWN_JSON" '
-      map(.angle = $angle
-          | .file = (
-              (.file // null) as $v
-              | if ($v | type) != "string" or $v == "" then $v
-                else ($v | sub("^[ \t\r\n]+"; "") | sub("[ \t\r\n]+$"; "") | sub("^[./]+"; "")) as $c
-                     | ([ $known[] | . as $k
-                          | select($c == $k or ($c | endswith("/" + $k))
-                                   or ($k | endswith("/" + $c))) ] | first) // $c
-                end)
-          )')" || die "cannot normalize $receipt"
-    collected="$(jq -cn --argjson collected "$collected" --argjson items "$items" \
-      '$collected + $items')" || die "cannot collect $receipt"
-    index=$((index + 1))
-  done
-  printf '%s\n' "$collected"
+    if [ -r "$receipt" ] && payload="$(receipt_payload_json "$receipt" "$angle" 2>/dev/null)"; then
+      payloads="$payloads$payload
+"
+    else
+      pending="$pending$task_id
+"
+    fi
+  done <<EOF
+$(printf '%s' "$plan" | jq -r '.tasks[] | [.id, .angle] | @tsv')
+EOF
+
+  PLAN_PENDING="$(printf '%s' "$pending" | jq -R . | jq -s .)" \
+    || die "cannot collect pending review tasks"
+  # Reviewers cite files inconsistently (absolute, repo-relative, bare basename) and only the
+  # packet's --stat list is authoritative, so every collected `file` is normalized here — once
+  # for the whole round rather than once per receipt.
+  PLAN_CANDIDATES="$(printf '%s' "$payloads" | jq -sc --argjson known "$KNOWN_JSON" '
+    [ .[]
+      | .angle as $angle
+      | .findings[]
+      | .angle = $angle
+      | .file = (
+          (.file // null) as $v
+          | if ($v | type) != "string" or $v == "" then $v
+            else ($v | sub("^[ \t\r\n]+"; "") | sub("[ \t\r\n]+$"; "") | sub("^[./]+"; "")) as $c
+                 | ([ $known[] | . as $k
+                      | select($c == $k or ($c | endswith("/" + $k))
+                               or ($k | endswith("/" + $c))) ] | first) // $c
+            end) ]')" || die "cannot normalize the completed review receipts"
+}
+
+require_no_pending() {
+  [ "$(printf '%s' "$PLAN_PENDING" | jq 'length')" = "0" ] \
+    || die "review tasks incomplete: $(printf '%s' "$PLAN_PENDING" | jq -r 'join(", ")')"
 }
 
 # Indices some verdicts-<n>.json already carries a verdict for.
@@ -362,18 +436,20 @@ ruled_json() {
 # ---------------------------------------------------------------- pending / prepare
 
 cmd_pending() {
-  local plan pending
+  KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
+  local plan
   plan="$(review_plan_json)" || exit 1
-  pending="$(pending_json "$plan")" || exit 1
-  printf '%s' "$pending" | jq --indent 1 . || die "cannot print pending tasks"
+  collect_receipts "$plan"
+  printf '%s' "$PLAN_PENDING" | jq --indent 1 . || die "cannot print pending tasks"
 }
 
 cmd_prepare() {
   KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
   local plan candidates
   plan="$(review_plan_json)" || exit 1
-  require_complete_plan "$plan"
-  candidates="$(collect_json "$plan")" || exit 1
+  collect_receipts "$plan"
+  require_no_pending
+  candidates="$PLAN_CANDIDATES"
 
   if [ "$(printf '%s' "$candidates" | jq 'length')" = "0" ]; then
     # Exit 0 on purpose: an all-empty round is a valid outcome, and a non-zero exit here
@@ -526,14 +602,14 @@ fingerprint_candidates() {
 }
 
 cmd_build() {
+  KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
   local plan normalized_file="$OUTDIR/normalized-candidates.json"
   plan="$(review_plan_json)" || exit 1
-  require_complete_plan "$plan"
+  collect_receipts "$plan"
+  require_no_pending
   if [ -f "$normalized_file" ]; then
-    KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
-    local current_keys normalized_keys current
-    current="$(collect_json "$plan")" || exit 1
-    current_keys="$(printf '%s' "$current" | fingerprint_candidates)" \
+    local current_keys normalized_keys
+    current_keys="$(printf '%s' "$PLAN_CANDIDATES" | fingerprint_candidates)" \
       || die "cannot fingerprint completed review receipts"
     normalized_keys="$(fingerprint_candidates "$normalized_file")" \
       || die "cannot fingerprint $normalized_file"
@@ -542,10 +618,7 @@ cmd_build() {
   else
     # A round where every completed angle receipt has no findings never runs prepare; an
     # empty report is the correct result for it, not an error.
-    KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
-    local any
-    any="$(collect_json "$plan")" || exit 1
-    [ "$(printf '%s' "$any" | jq 'length')" = "0" ] \
+    [ "$(printf '%s' "$PLAN_CANDIDATES" | jq 'length')" = "0" ] \
       || die "out/normalized-candidates.json missing — run \`findings.sh prepare\` first" 2
     printf '[]\n' > "$OUTDIR/findings.json" || die "cannot write findings.json"
     echo "wrote out/findings.json with 0 finding(s)"

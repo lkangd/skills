@@ -203,14 +203,19 @@ substitutions:
   `git diff <args>` output, using the same `--diff-args` mapping as §3 — then continue with
   orchestrator.md Step 1's completion tasks (conventions, untracked files). Likewise
   concretize `RUN_DIR/prompts/<angle>.md` from the templates yourself (orchestrator.md
-  Step 2 assumes the launcher did it; in-session there is none) — including
+  Step 2 assumes the launcher did it; in-session there is none) — substituting every `{{…}}`
+  placeholder, including `{{RECEIPT_CONTRACT}}` (verbatim contents of
+  `PLUGIN_ROOT/references/receipt-contract.md` — the output contract `findings.sh` parses, so
+  a prompt that keeps the literal placeholder produces checkpoints nothing can read) and
   `{{PACKET_NOTE}}`: measure the packet and tell reviewers whether it fits in one `Read`
   (the tool rejects anything over 25,000 tokens) or must be read in chunks, and at what
-  chunk size.
-- Create `RUN_DIR/review-plan.json` alongside the prompts with top-level `version: 1`,
-  `status: "ready"`, immutable `requested_angles` containing the unsliced angle list, and
-  `tasks`. Each task is `{id, angle, prompt}`, where `prompt` is the canonical absolute
-  `RUN_DIR/prompts/<id>.md` path. A normal angle uses its angle name as the task ID; large-diff
+  chunk size. `sweep.md`'s `{{VERIFIED_FINDINGS}}` is the one placeholder filled later.
+- Create `RUN_DIR/review-plan.json` alongside the prompts with top-level `version: 2`,
+  `status: "ready"`, immutable `requested_angles` containing the unsliced angle list,
+  `late_waves` (`[{"wave":2,"angles":["sweep"]}]` when the round includes `design`, else `[]`),
+  and `tasks`. Each task is `{id, angle, wave}` with `wave: 1` for the review plan proper; its
+  prompt is always `RUN_DIR/prompts/<id>.md` and is never stored. A normal angle uses its angle
+  name as the task ID; large-diff
   slices use `<angle>-<N>` starting at 1 and replace that angle's base task. Write the finished
   plan atomically. Before every initial/resume dispatch, run
   `scripts/findings.sh pending --run-dir RUN_DIR` and dispatch exactly those task IDs. Then run

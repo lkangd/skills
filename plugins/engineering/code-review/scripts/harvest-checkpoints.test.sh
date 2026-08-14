@@ -20,13 +20,14 @@ RUN_DIR="$(cd "$RUN_DIR" && pwd -P)"
 : > "$RUN_DIR/prompts/correctness.md"
 : > "$RUN_DIR/prompts/reuse.md"
 printf '%s\n' '[{"index":1}]' > "$RUN_DIR/out/verify-input-1.json"
-jq -n --arg run_dir "$RUN_DIR" '{
-  version: 1,
+jq -n '{
+  version: 2,
   status: "ready",
   requested_angles: ["correctness", "reuse"],
+  late_waves: [],
   tasks: [
-    {id: "correctness", angle: "correctness", prompt: ($run_dir + "/prompts/correctness.md")},
-    {id: "reuse", angle: "reuse", prompt: ($run_dir + "/prompts/reuse.md")}
+    {id: "correctness", angle: "correctness", wave: 1},
+    {id: "reuse", angle: "reuse", wave: 1}
   ]
 }' > "$RUN_DIR/review-plan.json"
 printf '%s\n' '{"status":"completed","findings":[1]}' \
