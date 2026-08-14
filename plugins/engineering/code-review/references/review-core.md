@@ -163,7 +163,9 @@ A round whose orchestrator died is not lost: the packet, prompts, persisted task
 (`RUN_DIR/review-plan.json`, including immutable `requested_angles`), orchestrator session id
 (`RUN_DIR/session-id`), and per-step
 checkpoints (`RUN_DIR/out/candidates-*.json`, `verdicts-*.json`, `findings.json`) survive on
-disk. Each new candidates checkpoint is an explicit
+disk. The launcher-side transcript harvester recovers completed Agent tool results before each
+resume attempt, including siblings stranded behind a failed parallel wave. Each new candidates
+checkpoint is an explicit
 `{"status":"completed","findings":[...]}` receipt, so an empty findings array still proves
 that exact planned task finished and must not be re-dispatched. Resume it — as a background
 task, same as a launch — with:
@@ -205,9 +207,12 @@ substitutions:
   `{{PACKET_NOTE}}`: measure the packet and tell reviewers whether it fits in one `Read`
   (the tool rejects anything over 25,000 tokens) or must be read in chunks, and at what
   chunk size.
-- Create `RUN_DIR/review-plan.json` alongside the prompts with one `{id, angle, prompt}` task
-  per angle and `status: ready`; for a large diff, persist concrete slice prompt files and use
-  one task per slice instead. Before every initial/resume dispatch, run
+- Create `RUN_DIR/review-plan.json` alongside the prompts with top-level `version: 1`,
+  `status: "ready"`, immutable `requested_angles` containing the unsliced angle list, and
+  `tasks`. Each task is `{id, angle, prompt}`, where `prompt` is the canonical absolute
+  `RUN_DIR/prompts/<id>.md` path. A normal angle uses its angle name as the task ID; large-diff
+  slices use `<angle>-<N>` starting at 1 and replace that angle's base task. Write the finished
+  plan atomically. Before every initial/resume dispatch, run
   `scripts/findings.sh pending --run-dir RUN_DIR` and dispatch exactly those task IDs. Then run
   `prepare` before verification and `build` before reporting instead of doing that bookkeeping
   by hand.

@@ -20,7 +20,7 @@ new_run() {
 
 write_plan() {
   local run_dir="$1"
-  run_dir="$(cd "$run_dir" && pwd)"
+  run_dir="$(cd "$run_dir" && pwd -P)"
   local status="$2"
   shift 2
   local tasks='[]' task_id angle prompt
@@ -46,6 +46,13 @@ assert_json() {
   local file="$1"
   local filter="$2"
   jq -e "$filter" "$file" >/dev/null || fail "$file did not satisfy: $filter"
+}
+
+assert_json_output() {
+  local json="$1"
+  local filter="$2"
+  local message="$3"
+  printf '%s' "$json" | jq -e "$filter" >/dev/null || fail "$message"
 }
 
 run_empty_receipt_test() {
@@ -129,13 +136,6 @@ run_incomplete_receipt_test() {
     || fail "prepare checkpointed candidates from an incomplete receipt"
 }
 
-assert_json_output() {
-  local json="$1"
-  local filter="$2"
-  local message="$3"
-  printf '%s' "$json" | jq -e "$filter" >/dev/null || fail "$message"
-}
-
 run_resume_selection_test() {
   local run_dir="$TMP_ROOT/resume-selection"
   new_run "$run_dir"
@@ -177,6 +177,27 @@ run_draft_plan_test() {
   fi
   grep -q 'review plan is not ready' "$run_dir/error.log" \
     || fail "pending did not require slice-plan finalization"
+}
+
+run_symlinked_run_dir_test() {
+  local physical_run="$TMP_ROOT/symlink-physical"
+  local linked_run="$TMP_ROOT/symlink-run"
+  new_run "$physical_run"
+  ln -s "$physical_run" "$linked_run"
+  mkdir -p "$linked_run/prompts"
+  : > "$linked_run/prompts/correctness.md"
+  jq -n --arg prompt "$linked_run/prompts/correctness.md" '{
+    version: 1,
+    status: "ready",
+    requested_angles: ["correctness"],
+    tasks: [{id: "correctness", angle: "correctness", prompt: $prompt}]
+  }' > "$linked_run/review-plan.json"
+  printf '%s\n' '{"status":"completed","findings":[]}' \
+    > "$linked_run/out/candidates-correctness.json"
+
+  assert_json_output "$(bash "$FINDINGS" pending --run-dir "$physical_run")" \
+    'length == 0' \
+    "physical run-dir spelling rejected an equivalent symlinked plan prompt"
 }
 
 run_plan_coverage_test() {
@@ -251,6 +272,58 @@ run_legacy_migration_test() {
   assert_json "$run_dir/out/findings.json" 'type == "array" and length == 0'
 }
 
+run_legacy_large_diff_migration_test() {
+  local run_dir="$TMP_ROOT/legacy-large-diff"
+  new_run "$run_dir"
+  printf '%s\n' '- Angles this round: correctness' \
+    > "$run_dir/orchestrator-prompt.md"
+  : > "$run_dir/prompts/correctness.md"
+  : > "$run_dir/raw_diff.txt"
+  local line=1
+  while [ "$line" -le 1501 ]; do
+    printf 'line %s\n' "$line" >> "$run_dir/raw_diff.txt"
+    line=$((line + 1))
+  done
+
+  if bash "$FINDINGS" pending --run-dir "$run_dir" >/dev/null 2> "$run_dir/error.log"; then
+    fail "legacy migration dispatched an unsliced large diff"
+  fi
+  grep -q 'review plan is not ready' "$run_dir/error.log" \
+    || fail "legacy large-diff migration did not require slicing"
+  assert_json "$run_dir/review-plan.json" '.status == "draft"'
+}
+
+run_orphan_checkpoint_test() {
+  local run_dir="$TMP_ROOT/orphan-checkpoint"
+  new_run "$run_dir"
+  write_plan "$run_dir" ready correctness correctness
+  printf '%s\n' '{"status":"completed","findings":[]}' \
+    > "$run_dir/out/candidates-correctness.json"
+  printf '%s\n' '{"status":"completed","findings":[]}' \
+    > "$run_dir/out/candidates-sweep.json"
+
+  if bash "$FINDINGS" prepare --run-dir "$run_dir" >/dev/null 2> "$run_dir/error.log"; then
+    fail "prepare silently ignored an unplanned checkpoint"
+  fi
+  grep -q 'checkpoint is not listed in review-plan.json' "$run_dir/error.log" \
+    || fail "prepare did not explain the unplanned checkpoint"
+}
+
+run_build_before_prepare_exit_test() {
+  local run_dir="$TMP_ROOT/build-before-prepare"
+  new_run "$run_dir"
+  write_plan "$run_dir" ready correctness correctness
+  jq -n '{
+    status: "completed",
+    findings: [{severity: "major", title: "Example", file: "src/example.js", line: 1,
+      evidence: "evidence", why: "trigger", suggestion: "fix"}]
+  }' > "$run_dir/out/candidates-correctness.json"
+
+  local code=0
+  bash "$FINDINGS" build --run-dir "$run_dir" >/dev/null 2> "$run_dir/error.log" || code=$?
+  [ "$code" = "2" ] || fail "build-before-prepare exited $code instead of 2"
+}
+
 run_stale_normalized_test() {
   local run_dir="$TMP_ROOT/stale-normalized"
   new_run "$run_dir"
@@ -308,7 +381,7 @@ extract_json_example() {
     block="$block$line
 "
   done < "$file"
-  printf '%b' "$block"
+  printf '%s' "$block"
 }
 
 run_contract_test() {
@@ -322,6 +395,10 @@ run_contract_test() {
       || fail "$(basename "$angle") does not explicitly report a successful zero-finding review"
   done
 
+  grep -Fq '{"status":"completed","findings":[]}' "$PLUGIN_ROOT/agents/reviewer.md" \
+    || fail "the in-session reviewer prompt does not carry the zero-finding receipt contract"
+  grep -Fq '{"status":"completed","findings":[]}' "$PLUGIN_ROOT/scripts/run-orchestrator.sh" \
+    || fail "the external reviewer prompt does not carry the zero-finding receipt contract"
 }
 
 run_empty_receipt_test
@@ -330,10 +407,14 @@ run_legacy_array_test
 run_incomplete_receipt_test
 run_resume_selection_test
 run_draft_plan_test
+run_symlinked_run_dir_test
 run_plan_coverage_test
 run_launch_angle_integrity_test
 run_plan_relabel_test
 run_legacy_migration_test
+run_legacy_large_diff_migration_test
+run_orphan_checkpoint_test
+run_build_before_prepare_exit_test
 run_stale_normalized_test
 run_contract_test
 

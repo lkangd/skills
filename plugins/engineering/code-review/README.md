@@ -155,11 +155,13 @@ orchestrator's writes.
 A review round is 10–40+ minutes of reviewer tokens; an API error in the last turn must not
 discard them. Three layers ensure it doesn't:
 
-- The launcher persists `RUN_DIR/review-plan.json`, and the orchestrator **checkpoints every
-  subagent result** to `RUN_DIR/out/` the moment it arrives
-  (`candidates-<task-id>.json`, `verdicts-<n>.json`, and the final `findings.json`). Resume runs
-  `findings.sh pending` against that plan, so completed zero-finding tasks are skipped while
-  missing or invalid task receipts remain pending.
+- The launcher persists `RUN_DIR/review-plan.json` and runs a transcript harvester beside the
+  orchestrator. Each completed reviewer/verifier tool result is validated and atomically
+  checkpointed to `RUN_DIR/out/` immediately (`candidates-<task-id>.json` or
+  `verdicts-<n>.json`) even when other calls in the same parallel wave are still running. This
+  avoids the parent model's all-tools barrier: one slow or failed Agent cannot strand already
+  completed siblings in the transcript. Resume runs `findings.sh pending` against the plan, so
+  completed zero-finding tasks are skipped while missing or invalid receipts remain pending.
 - The launcher pins the orchestrator's `--session-id` (saved to `RUN_DIR/session-id`) and,
   when the session dies without a parseable report, **auto-resumes it once** — the resumed
   session continues at the first incomplete step instead of starting over.

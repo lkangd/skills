@@ -43,6 +43,7 @@ set -u
 die() { echo "findings.sh: $1" >&2; exit "${2:-1}"; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not on PATH"
+PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)" || die "cannot resolve plugin root"
 
 # jq helpers shared by both subcommands. Two things need care against the Python reference
 # these were ported from: jq's sort_by breaks ties by comparing the values themselves, where
@@ -100,51 +101,14 @@ changed_files_json() {
   }' "$stat" | sort -s -k1,1nr | cut -f2- | jq -R . | jq -s .
 }
 
-migrate_legacy_plan() {
-  local plan="$RUN_DIR/review-plan.json" launch_prompt="$RUN_DIR/orchestrator-prompt.md"
-  local angles tasks='[]' requested='[]' angle prompt status='ready' f temp
-  [ -r "$launch_prompt" ] \
-    || die "review-plan.json missing and legacy launch prompt is unavailable"
-  angles="$(sed -n 's/^- Angles this round: //p' "$launch_prompt" | head -1)"
-  [ -n "$angles" ] || die "cannot recover requested angles from legacy launch prompt"
-
-  IFS=',' read -ra LEGACY_ANGLES <<< "$angles"
-  for angle in "${LEGACY_ANGLES[@]}"; do
-    angle="${angle//[[:space:]]/}"
-    [ -n "$angle" ] || continue
-    for f in "$OUTDIR/candidates-$angle-"[0-9]*.json; do
-      [ -e "$f" ] || continue
-      die "legacy sliced checkpoints cannot be migrated safely — resume with the plugin version that created this run"
-    done
-    prompt="$RUN_DIR/prompts/$angle.md"
-    [ -r "$prompt" ] || die "legacy angle prompt missing: $prompt"
-    requested="$(jq -cn --argjson angles "$requested" --arg angle "$angle" \
-      '$angles + [$angle]')" || die "cannot migrate requested angle $angle"
-    tasks="$(jq -cn --argjson tasks "$tasks" --arg id "$angle" --arg angle "$angle" \
-      --arg prompt "$prompt" '$tasks + [{id: $id, angle: $angle, prompt: $prompt}]')" \
-      || die "cannot migrate review task $angle"
-  done
-
-  if [ -r "$RUN_DIR/prompts/sweep.md" ] && [ -e "$OUTDIR/candidates-sweep.json" ]; then
-    tasks="$(jq -cn --argjson tasks "$tasks" --arg prompt "$RUN_DIR/prompts/sweep.md" \
-      '$tasks + [{id: "sweep", angle: "sweep", prompt: $prompt}]')" \
-      || die "cannot migrate sweep task"
-  fi
-  if ! compgen -G "$OUTDIR/candidates-*.json" >/dev/null \
-    && [ -r "$RUN_DIR/raw_diff.txt" ] \
-    && [ "$(wc -l < "$RUN_DIR/raw_diff.txt" | tr -d ' ')" -gt 1500 ]; then
-    status='draft'
-  fi
-
-  temp="$plan.tmp"
-  jq -n --arg status "$status" --argjson requested_angles "$requested" --argjson tasks "$tasks" \
-    '{version: 1, status: $status, requested_angles: $requested_angles, tasks: $tasks}' \
-    > "$temp" || die "cannot write migrated review plan"
-  mv "$temp" "$plan" || die "cannot install migrated review plan"
-}
-
 requested_angles_from_launch() {
-  local launch_prompt="$RUN_DIR/orchestrator-prompt.md" angles requested='[]' angle
+  local launch_params="$RUN_DIR/launch-params.json" launch_prompt="$RUN_DIR/orchestrator-prompt.md"
+  local angles requested='[]' angle
+  if [ -r "$launch_params" ]; then
+    jq -ce 'if type == "object" and .version == 1 and (.requested_angles | type) == "array"
+      then .requested_angles else error("invalid launch parameters") end' "$launch_params"
+    return
+  fi
   [ -r "$launch_prompt" ] || return 1
   angles="$(sed -n 's/^- Angles this round: //p' "$launch_prompt" | head -1)"
   [ -n "$angles" ] || return 1
@@ -158,23 +122,65 @@ requested_angles_from_launch() {
   printf '%s\n' "$requested"
 }
 
+migrate_legacy_plan() {
+  local plan="$RUN_DIR/review-plan.json"
+  local tasks='[]' requested angle prompt status='ready' f temp
+  requested="$(requested_angles_from_launch)" \
+    || die "review-plan.json missing and launch metadata is unavailable"
+
+  while IFS= read -r angle; do
+    angle="${angle//[[:space:]]/}"
+    [ -n "$angle" ] || continue
+    for f in "$OUTDIR/candidates-$angle-"[0-9]*.json; do
+      [ -e "$f" ] || continue
+      die "legacy sliced checkpoints cannot be migrated safely — resume with the plugin version that created this run"
+    done
+    prompt="$RUN_DIR/prompts/$angle.md"
+    [ -r "$prompt" ] || die "legacy angle prompt missing: $prompt"
+    tasks="$(jq -cn --argjson tasks "$tasks" --arg id "$angle" --arg angle "$angle" \
+      --arg prompt "$prompt" '$tasks + [{id: $id, angle: $angle, prompt: $prompt}]')" \
+      || die "cannot migrate review task $angle"
+  done <<EOF
+$(printf '%s' "$requested" | jq -r '.[]')
+EOF
+
+  if [ -e "$OUTDIR/candidates-sweep.json" ]; then
+    [ -r "$RUN_DIR/prompts/sweep.md" ] || die "legacy sweep checkpoint has no prompt: $RUN_DIR/prompts/sweep.md"
+    tasks="$(jq -cn --argjson tasks "$tasks" --arg prompt "$RUN_DIR/prompts/sweep.md" \
+      '$tasks + [{id: "sweep", angle: "sweep", prompt: $prompt}]')" \
+      || die "cannot migrate sweep task"
+  fi
+  if ! compgen -G "$OUTDIR/candidates-*.json" >/dev/null \
+    && [ -r "$RUN_DIR/raw_diff.txt" ] \
+    && [ "$(wc -l < "$RUN_DIR/raw_diff.txt" | tr -d ' ')" -gt 1500 ]; then
+    status='draft'
+  fi
+  temp="$plan.tmp"
+  jq -n --arg status "$status" --argjson requested_angles "$requested" --argjson tasks "$tasks" \
+    '{version: 1, status: $status, requested_angles: $requested_angles, tasks: $tasks}' \
+    > "$temp" || die "cannot write migrated review plan"
+  mv "$temp" "$plan" || die "cannot install migrated review plan"
+}
+
 review_plan_json() {
   local plan="$RUN_DIR/review-plan.json" parsed task_count index task_id angle slice_id prompt expected_prompt
-  local requested_count requested_index requested_angle matching_ids exact_count launch_requested plan_requested
+  local prompt_physical expected_physical requested_count requested_index requested_angle matching_ids exact_count
+  local launch_requested plan_requested
+  local known_angles
   [ -r "$plan" ] || migrate_legacy_plan
-  parsed="$(jq -c '
-    def known_angle:
-      . as $angle
-      | ["correctness","removed-behavior","callers","reuse","simplification","efficiency",
-         "altitude","conventions","design","pitfalls","wrapper","spec","re-review"]
-      | index($angle) != null;
+  known_angles="$(for prompt in "$PLUGIN_ROOT"/references/angles/*.md; do
+    [ -e "$prompt" ] || continue
+    basename "$prompt" .md
+  done | jq -R . | jq -s .)" || die "cannot enumerate review angles"
+  parsed="$(jq -c --argjson known_angles "$known_angles" '
+    def known_angle: . as $angle | $known_angles | index($angle) != null;
     if type != "object" or .version != 1
       then error("expected review plan version 1")
     elif (.requested_angles | type) != "array" or (.requested_angles | length) == 0
       then error("expected a non-empty requested_angles array")
     elif ([.requested_angles[]] | length) != ([.requested_angles[]] | unique | length)
       then error("requested angles must be unique")
-    elif any(.requested_angles[]; ((type != "string") or ((. | known_angle) | not)))
+    elif any(.requested_angles[]; ((type != "string") or . == "sweep" or ((. | known_angle) | not)))
       then error("requested_angles contains an unknown angle")
     elif (.tasks | type) != "array" or (.tasks | length) == 0
       then error("expected a non-empty tasks array")
@@ -186,11 +192,17 @@ review_plan_json() {
       then error("task IDs must be lowercase kebab-case")
     elif any(.tasks[]; ((.angle | type) != "string") or ((.prompt | type) != "string"))
       then error("every task needs angle and prompt strings")
-    elif any(.tasks[]; (.angle != "sweep" and ((.angle | known_angle) | not)))
+    elif any(.tasks[]; ((.angle | known_angle) | not))
       then error("tasks contains an unknown angle")
     else . end' "$plan")" || die "cannot parse $plan"
 
-  if launch_requested="$(requested_angles_from_launch)"; then
+  if [ -r "$RUN_DIR/launch-params.json" ]; then
+    launch_requested="$(requested_angles_from_launch)" \
+      || die "cannot parse $RUN_DIR/launch-params.json"
+  elif ! launch_requested="$(requested_angles_from_launch)"; then
+    launch_requested=""
+  fi
+  if [ -n "$launch_requested" ]; then
     plan_requested="$(printf '%s' "$parsed" | jq -c '.requested_angles')"
     [ "$plan_requested" = "$launch_requested" ] \
       || die "review plan requested_angles do not match the persisted launch angles"
@@ -219,9 +231,13 @@ review_plan_json() {
       fi
     fi
     expected_prompt="$RUN_DIR/prompts/$task_id.md"
-    [ "$prompt" = "$expected_prompt" ] \
-      || die "review task prompt must match its task ID: $task_id"
     [ -r "$prompt" ] || die "review task prompt missing: $prompt"
+    prompt_physical="$(cd "$(dirname "$prompt")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$prompt")")" \
+      || die "cannot resolve review task prompt: $prompt"
+    expected_physical="$(cd "$(dirname "$expected_prompt")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$expected_prompt")")" \
+      || die "cannot resolve expected review task prompt: $expected_prompt"
+    [ "$prompt_physical" = "$expected_physical" ] \
+      || die "review task prompt must match its task ID: $task_id"
     index=$((index + 1))
   done
 
@@ -243,7 +259,7 @@ review_plan_json() {
 }
 
 receipt_findings_json() {
-  local file="$1" filter payload
+  local file="$1" filter payload first_error
   filter='
     (if type == "array" then .
      elif type == "object" and .status == "completed" and (.findings | type) == "array"
@@ -252,7 +268,8 @@ receipt_findings_json() {
     | if any($findings[]; type != "object")
       then error("review findings must be objects")
       else $findings end'
-  if jq -c "$filter" "$file" 2>/dev/null; then
+  if first_error="$(jq -c "$filter" "$file" 2>&1)"; then
+    printf '%s\n' "$first_error"
     return 0
   fi
 
@@ -265,7 +282,8 @@ receipt_findings_json() {
   if [ -n "$payload" ]; then
     printf '%s\n' "$payload" | jq -c "$filter"
   else
-    jq -c "$filter" "$file"
+    printf '%s\n' "$first_error" >&2
+    return 1
   fi
 }
 
@@ -296,8 +314,15 @@ require_complete_plan() {
 # {"status":"completed","findings":[...]}; legacy bare arrays remain readable so interrupted
 # runs created before the receipt protocol can still resume.
 collect_json() {
-  local plan="$1" task_count index task_id angle receipt items collected='[]'
-  require_complete_plan "$plan"
+  local plan="$1" task_count index task_id angle receipt items collected='[]' f orphan_id
+  for f in "$OUTDIR"/candidates-*.json; do
+    [ -e "$f" ] || continue
+    orphan_id="$(basename "$f")"
+    orphan_id="${orphan_id#candidates-}"
+    orphan_id="${orphan_id%.json}"
+    printf '%s' "$plan" | jq -e --arg id "$orphan_id" '.tasks | any(.id == $id)' >/dev/null \
+      || die "checkpoint is not listed in review-plan.json: $f"
+  done
   task_count="$(printf '%s' "$plan" | jq '.tasks | length')"
   index=0
   while [ "$index" -lt "$task_count" ]; do
@@ -347,6 +372,7 @@ cmd_prepare() {
   KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
   local plan candidates
   plan="$(review_plan_json)" || exit 1
+  require_complete_plan "$plan"
   candidates="$(collect_json "$plan")" || exit 1
 
   if [ "$(printf '%s' "$candidates" | jq 'length')" = "0" ]; then
@@ -493,6 +519,12 @@ cmd_prepare() {
 
 # ---------------------------------------------------------------- build
 
+fingerprint_candidates() {
+  jq -Sc "$JQ_LIB"'
+    map(del(.index, .merged_duplicate))
+    | sort_by([(.angle // ""), (.file // ""), lineof, (.title // "")])' "$@"
+}
+
 cmd_build() {
   local plan normalized_file="$OUTDIR/normalized-candidates.json"
   plan="$(review_plan_json)" || exit 1
@@ -501,25 +533,20 @@ cmd_build() {
     KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
     local current_keys normalized_keys current
     current="$(collect_json "$plan")" || exit 1
-    current_keys="$(printf '%s' "$current" | jq -Sc "$JQ_LIB"'
-      map(del(.index, .merged_duplicate))
-      | sort_by([(.angle // ""), (.file // ""), lineof, (.title // "")])')" \
+    current_keys="$(printf '%s' "$current" | fingerprint_candidates)" \
       || die "cannot fingerprint completed review receipts"
-    normalized_keys="$(jq -Sc "$JQ_LIB"'
-      map(del(.index, .merged_duplicate))
-      | sort_by([(.angle // ""), (.file // ""), lineof, (.title // "")])' \
-      "$normalized_file")" || die "cannot fingerprint $normalized_file"
+    normalized_keys="$(fingerprint_candidates "$normalized_file")" \
+      || die "cannot fingerprint $normalized_file"
     [ "$current_keys" = "$normalized_keys" ] \
       || die "out/normalized-candidates.json is stale — run \`findings.sh prepare\` first" 2
-  fi
-  if [ ! -f "$normalized_file" ]; then
+  else
     # A round where every completed angle receipt has no findings never runs prepare; an
     # empty report is the correct result for it, not an error.
     KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
     local any
     any="$(collect_json "$plan")" || exit 1
     [ "$(printf '%s' "$any" | jq 'length')" = "0" ] \
-      || die "out/normalized-candidates.json missing — run \`findings.sh prepare\` first"
+      || die "out/normalized-candidates.json missing — run \`findings.sh prepare\` first" 2
     printf '[]\n' > "$OUTDIR/findings.json" || die "cannot write findings.json"
     echo "wrote out/findings.json with 0 finding(s)"
     echo "STATS: 0 raw, 0 verified, 0 refuted"
@@ -606,7 +633,7 @@ case "$BATCH_SIZE" in ''|*[!0-9]*) die "--batch-size must be a positive integer"
 [ "$BATCH_SIZE" -gt 0 ] || die "--batch-size must be a positive integer"
 
 RUN_DIR_ARG="$RUN_DIR"
-RUN_DIR="$(cd "$RUN_DIR" 2>/dev/null && pwd)" || die "no such run dir: $RUN_DIR_ARG"
+RUN_DIR="$(cd "$RUN_DIR" 2>/dev/null && pwd -P)" || die "no such run dir: $RUN_DIR_ARG"
 OUTDIR="$RUN_DIR/out"
 [ -d "$OUTDIR" ] || die "not a run dir (no out/): $RUN_DIR"
 

@@ -29,14 +29,15 @@ known-issues list to suppress (may be "none").
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
   enforce this — do not work around it.
 - **Checkpoint discipline**: your session can be killed at any moment (API error, quota
-  limit) and anything living only in your context dies with it. Every subagent result must
-  hit disk under `RUN_DIR/out/` the moment it arrives, before you reason about it or
-  dispatch anything else — Steps 2–4 name the exact files. Concretely: the message you send
-  immediately after a dispatch wave returns contains the checkpoint Writes and NOTHING else
-  — no analysis, no next dispatch, no commentary. (Observed: an orchestrator that reasoned
-  for five minutes first was killed by an API error in exactly that window, and only a
-  same-session resume saved twelve minutes of reviewer work.) A killed session with
-  checkpoints is resumable; one without them wastes the whole round.
+  limit) and anything living only in your context dies with it. The launcher runs a transcript
+  harvester beside this session: every completed reviewer/verifier tool result is validated and
+  atomically written under `RUN_DIR/out/` even while the rest of its parallel wave is still
+  running. This external path is what makes per-agent completion durable across the parent
+  model's all-tools barrier. When a dispatch wave returns control to you, check the expected
+  checkpoint files immediately and Write only any result the harvester missed, in a message
+  containing those fallback Writes and NOTHING else. Never overwrite a valid completed
+  checkpoint. A killed session with checkpoints is resumable; one without them wastes the
+  whole round.
 - **Token discipline**: every turn re-sends your entire accumulated context, so your cost is
   turns × context size. Batch ALL independent tool calls into a single message (all
   checkpoint Writes of a returning batch together, all dispatches of a wave together, the
@@ -62,8 +63,10 @@ exact task finished, including when `findings` is empty — NEVER re-dispatch it
 compatibility, a legacy checkpoint containing a bare JSON array also counts as completed. If
 an older run has no plan, the helper reconstructs one from its persisted launch prompt and base
 prompts; legacy sliced runs fail closed because their original slice scope cannot be recovered
-safely. A missing, malformed, or non-completed receipt remains pending. Dispatch exactly the returned
-IDs, using their `prompt` paths from the plan. `out/verdicts-<n>.json` are completed verifier
+safely. A missing, malformed, or non-completed receipt remains pending. If a successful reviewer left
+a malformed checkpoint, delete that invalid checkpoint and treat it as a failed dispatch:
+re-dispatch once, then use the inline fallback if the replacement is still malformed. Dispatch
+exactly the returned IDs, using their `prompt` paths from the plan. `out/verdicts-<n>.json` are completed verifier
 batches; `out/findings.json`, if present, is the final verified findings array — go straight to
 Step 4 and report from it.
 
@@ -95,15 +98,17 @@ requires judgment, batching the file reads each task needs into a single message
 ## Step 2 — Dispatch angle reviewers
 
 `RUN_DIR/prompts/<angle>.md` already exists for every angle this round — the launcher
-concretized the templates (packet path, how to read the packet, repo root, known issues) at
-zero token cost, `sweep.md` included. Never read the templates or rewrite these base files;
-only if a prompt file is missing (launcher warned about an unknown angle) do you build that one
-yourself from `PLUGIN_ROOT/references/angles/<angle>.md`.
+validated and concretized the templates (packet path, how to read the packet, repo root, known
+issues) at zero token cost, `sweep.md` included. Never read the templates or rewrite these base
+files. A missing base prompt is a corrupt launch artifact: stop rather than inventing one.
 
 `RUN_DIR/review-plan.json` initially records immutable `requested_angles` and one task per
-requested angle. The launcher marks it `ready` for a normal diff and `draft` when the diff
-exceeds the large-diff threshold. If it is draft, apply the large-diff rule below before the
-first review dispatch. Never change `requested_angles`. For every split angle,
+requested angle. The launcher marks it `ready` for a normal tracked diff and `draft` when the
+diff exceeds the large-diff threshold or the target may gain untracked-file content in Step 1.
+If it is draft, judge the completed packet against the large-diff rule below before the first
+review dispatch: either replace split angles with slice tasks, or keep the base tasks when no
+split is needed, then set `status` to `ready` atomically. Never change `requested_angles`. For
+every split angle,
 write one complete `prompts/<angle>-<slice#>.md` per slice by copying the base
 prompt and appending the slice file restriction, then atomically replace that angle's base task
 with the slice tasks and set `status` to `ready` in the same final Write. Each task has exactly:
@@ -130,11 +135,13 @@ tasks still pending when your turn ends are terminated wholesale, killing the re
 mid-run and truncating the whole round. Parallelism comes from issuing multiple foreground
 dispatches in one message, not from backgrounding.
 
-**Checkpoint each result** — as each reviewer returns, extract the single JSON payload from
-its fenced block and write the raw completion receipt to
-`RUN_DIR/out/candidates-<task-id>.json` before dispatching more or analyzing the content. Do
-not write the Markdown fences. (`findings.sh` accepts fenced checkpoints defensively, but raw
-JSON is the canonical artifact.) Every new checkpoint must be
+**Checkpoint each result** — the launcher-side transcript harvester normally extracts each
+reviewer's fenced JSON payload and atomically writes the canonical raw receipt to
+`RUN_DIR/out/candidates-<task-id>.json` as soon as that Agent tool result reaches the session
+transcript; it does not wait for the parallel wave to finish. When the wave returns, check every
+returned task's file and Write only missing receipts before dispatching more or analyzing the
+content. Do not write Markdown fences. (`findings.sh` accepts fenced checkpoints defensively,
+but raw JSON is canonical.) Every new checkpoint must be
 `{"status":"completed","findings":[...]}`. A successful task with zero candidates therefore
 writes the explicit non-empty receipt `{"status":"completed","findings":[]}`; that completed
 status, not finding count, is the "this task is done" marker a resume relies on. The inline
@@ -144,10 +151,11 @@ during resume.
 **Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the packet's
 diff section exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
 `removed-behavior`, then `callers`) instead of dispatching them once: group the changed files
-into 2–3 coherent slices (by directory or feature, each slice ≤ ~1,200 diff lines) and
-dispatch that angle once per slice, appending to each dispatch prompt: "Restrict your review
-to these files: <slice file list>. Treat the rest of the packet as context only." Stay within
-the reviewer budget — merge slices rather than exceed it.
+into 2–3 coherent slices (by directory or feature, each slice ≤ ~1,200 diff lines). For each
+slice, create `prompts/<angle>-<slice#>.md` by copying the base prompt and appending:
+"Restrict your review to these files: <slice file list>. Treat the rest of the packet as context
+only." Replace that angle's base task with matching `{id, angle, prompt}` slice tasks in the
+same final plan Write. Stay within the reviewer budget — merge slices rather than exceed it.
 
 **Model tier selection** — match cost to task complexity (tier aliases opus > sonnet > haiku
 resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping automatically):
@@ -239,8 +247,10 @@ candidate objects carry their `index`), the packet path, and the following instr
 > decisive line). The keys and the three verdict words are machine-parsed ASCII protocol —
 > never translate them; the evidence text may be in any language.
 
-As each verifier returns, write its verdict array verbatim to `RUN_DIR/out/verdicts-<n>.json`
-(`n` = the batch number it verified) in a message containing nothing but those Writes.
+The transcript harvester writes each completed verifier array to
+`RUN_DIR/out/verdicts-<n>.json` (`n` = its batch number) without waiting for the rest of the
+wave. When control returns, Write only any missing verdict checkpoint in a message containing
+nothing but those fallback Writes.
 
 Do not apply the verdicts yourself — Step 4's command joins them onto the candidates, keeps
 CONFIRMED and PLAUSIBLE, and drops both REFUTED candidates and any candidate no verifier
