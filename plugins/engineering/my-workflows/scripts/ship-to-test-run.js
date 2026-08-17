@@ -12,7 +12,7 @@
 //   STEP:     出问题的步骤名
 //   DETAIL:   具体原因（可能多行）
 //   RESUME:   问题解决后用于断点续跑的完整命令
-//   NOTE:     需要如实转告用户的信息（跳过的环境、复用已合并 MR、跳过无分支的仓库等）
+//   NOTE:     需要如实转告用户的信息（跳过的环境、跳过审核人不在合并人中的仓库、复用已合并 MR、跳过无分支的仓库等）
 //   RESUMING / RESTART: 本次是从断点续跑还是完整重跑
 //
 // 用法:
@@ -251,6 +251,7 @@ function normalizeRunState(state, prevSkippedEnvs = [], runOpts = opts, env = nu
   state.head_sha = state.run_head_sha;
   if (!state.origin && env) state.origin = env.origin;
   state.skipped_envs = [...new Set([...prevSkippedEnvs, ...(state.skipped_envs || []), ...runOpts.skipEnvs])];
+  state.skipped_repos = Array.isArray(state.skipped_repos) ? state.skipped_repos : [];
   state.deploy_results = state.deploy_results || {};
   for (const record of Object.values(state.deploy_results)) {
     if (!record) continue;
@@ -461,6 +462,7 @@ function stepPlan(env, prevSkippedEnvs = [], prevDeployResults = {}) {
     deploy_targets: deployTargets,
     // 上一轮明确决定跳过的环境（如平台侧不支持接测）继续沿用，避免每轮都卡在同一个环境
     skipped_envs: prevSkippedEnvs,
+    skipped_repos: [],
     // 同一轮里重跑 plan（如旧状态缺字段）时必须继承已受理的触发，否则会在 Mars 滞后窗口
     // 重复触发同一次接测。目标 SHA 变了的记录会在 stepDeploy 的指纹检查里作废。
     deploy_results: prevDeployResults,
@@ -556,16 +558,97 @@ async function shaOnBranch(projBase, sha, branch, fetchFn = glFetch) {
   return { on: result.hit === true };
 }
 
+function repoUrlKey(url) {
+  return String(url || "").replace(/\/+$/, "");
+}
+
+function parseCreateRepoResults(text) {
+  const succeeded = [];
+  const failed = [];
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    const ok = line.match(/^成功仓库[：:]\s*(https?:\/\/\S+)/);
+    if (ok) {
+      succeeded.push(ok[1].replace(/[,;]+$/, ""));
+      continue;
+    }
+    const fail = line.match(/^失败仓库[：:]\s*(https?:\/\/\S+?):\s*(.+)$/);
+    if (fail) failed.push({ url: fail[1], reason: fail[2].trim() });
+  }
+  return { succeeded, failed };
+}
+
+function isReviewerMissingFailure(reason) {
+  return /获取审核人Id失败|用户不存在|找不到审核人/.test(reason || "");
+}
+
+function classifyReviewerMissingRepos(failed, { primaryUrl, auditUser } = {}) {
+  const skipped = [];
+  const hard = [];
+  const primary = repoUrlKey(primaryUrl);
+  for (const item of failed || []) {
+    const url = repoUrlKey(item.url);
+    if (isReviewerMissingFailure(item.reason) && url && url !== primary) {
+      skipped.push({
+        repository: item.url,
+        reason: `MR 合并人不包含已指定审核人 ${auditUser}（${item.reason}）`,
+      });
+    } else {
+      hard.push(item);
+    }
+  }
+  return { skipped, hard };
+}
+
+function primaryRepoUrl(state) {
+  const primary = (state.repositories || []).find((repo) => repo.gl_project_path === state.primary_repo);
+  return primary ? primary.repository : "";
+}
+
+function skippedRepoUrlSet(state) {
+  return new Set((state.skipped_repos || []).map((item) => repoUrlKey(item.repository)));
+}
+
+function recordSkippedRepo(state, skipped, skippedUrls) {
+  const repo = (state.repositories || []).find((item) => repoUrlKey(item.repository) === repoUrlKey(skipped.repository));
+  const rec = {
+    repository: skipped.repository,
+    gl_project_path: repo ? repo.gl_project_path : skipped.repository,
+    reason: skipped.reason,
+  };
+  const key = repoUrlKey(rec.repository);
+  if (!skippedUrls.has(key)) {
+    state.skipped_repos.push(rec);
+    skippedUrls.add(key);
+    console.log(`NOTE: 跳过仓库 ${rec.gl_project_path}：${rec.reason}`);
+  }
+  return rec;
+}
+
 async function stepCreate(env, state) {
+  state.skipped_repos = Array.isArray(state.skipped_repos) ? state.skipped_repos : [];
+  const skippedUrls = skippedRepoUrlSet(state);
+  const reposToCreate = state.repositories.filter((repo) => !skippedUrls.has(repoUrlKey(repo.repository)));
+  if (!reposToCreate.length) {
+    stop("ERROR", "create", "没有任何可创建 MR 的仓库（均因审核人不在合并人中被跳过）", "create");
+  }
+
   const args = ["mars-branch-create-merge-request", "--app_branch_id", String(state.app_branch_id)];
-  for (const r of state.repositories) args.push("--repositories", r.repository);
+  for (const r of reposToCreate) args.push("--repositories", r.repository);
   args.push("--audit_user", state.audit_user);
 
   const out = yunkeAction(args);
   console.log(`create-merge-request 原始输出:\n${out.text.trim()}`);
 
-  // 先做文本级失败检测：yunke-cli 创建 MR 失败时退出码依然是 0
-  if (!out.ok && !out.unsure) {
+  const classified = classifyReviewerMissingRepos(parseCreateRepoResults(out.text).failed, {
+    primaryUrl: primaryRepoUrl(state),
+    auditUser: state.audit_user,
+  });
+  for (const skipped of classified.skipped) recordSkippedRepo(state, skipped, skippedUrls);
+
+  // 先做文本级失败检测：yunke-cli 创建 MR 失败时退出码依然是 0。
+  // 附属仓库「审核人不在合并人中」只跳过该仓库，不能把整次 create 判失败。
+  if (classified.hard.length || (!out.ok && !out.unsure && !classified.skipped.length)) {
     const tooLong = /255|过长/.test(out.text);
     const hint = tooLong
       ? `\n看起来是 MR 标题超长：Mars 用整条 commit message 作为标题，上限 ${MAX_MR_TITLE} 字符。请 git commit --amend 精简后续跑（RESUME 已指向 sync，因为改写后的提交需要重新推送；提交已推送过时 push 需要 --force-with-lease）。`
@@ -577,6 +660,7 @@ async function stepCreate(env, state) {
   // 再做语义校验：命令说成功不代表 MR 真的建出来了，必须在 GitLab 侧看到对应本轮提交的 MR。
   const mrs = [];
   for (const repo of state.repositories) {
+    if (skippedUrls.has(repoUrlKey(repo.repository))) continue;
     const projBase = projBaseOf(repo);
     const expected = await expectedShaOf(repo, state);
     if (expected.error) stop("ERROR", "create", expected.error, "create");
@@ -634,8 +718,10 @@ async function stepCreate(env, state) {
     });
   }
   if (!mrs.length) {
+    const skipped = (state.skipped_repos || []).map((repo) => repo.gl_project_path).join(", ");
     stop("ERROR", "create",
-      `没有任何仓库产生可合并的 MR（全部仓库都没有 ${state.dev_branch} 分支）。请确认分支与应用配置后续跑`,
+      `没有任何仓库产生可合并的 MR（全部仓库都没有 ${state.dev_branch} 分支` +
+      `${skipped ? `；另有仓库因审核人不在合并人中被跳过: ${skipped}` : ""}）。请确认分支与应用配置后续跑`,
       "create");
   }
 
@@ -1233,9 +1319,13 @@ async function runWorkflow() {
     audit_user: `${state.audit_user_name}（${state.audit_user}, 来源: ${state.audit_user_source}）`,
     deploys: deployResults,
     skipped_envs: state.skipped_envs,
+    skipped_repos: state.skipped_repos,
   }, null, 2));
   if (state.skipped_envs.length) {
     console.log(`NOTE: 本轮跳过了这些环境的接测（用户此前已确认跳过）: ${state.skipped_envs.join(", ")}，报告时需如实说明`);
+  }
+  if (state.skipped_repos.length) {
+    console.log(`NOTE: 本轮跳过了这些仓库的 MR（审核人不在合并人中）: ${state.skipped_repos.map((repo) => `${repo.gl_project_path}（${repo.reason}）`).join("；")}，报告时需如实说明`);
   }
   if (state.ask_register_global) {
     const reviewer = state.ask_register_global;
@@ -1268,11 +1358,14 @@ module.exports = {
   applyMergedMrInfo,
   buildTargetFingerprint,
   captureDeploymentBaseline,
+  classifyReviewerMissingRepos,
   deploymentActionFor,
   deploymentTargetFingerprint,
   filterMrsForExpectedSha,
+  isReviewerMissingFailure,
   newDeployRecord,
   normalizeRunState,
+  parseCreateRepoResults,
   parseRunOptions,
   pollDeploymentVerification,
   recordTargetFingerprint,

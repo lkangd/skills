@@ -4,11 +4,14 @@ const assert = require("node:assert/strict");
 const {
   applyMergedMrInfo,
   captureDeploymentBaseline,
+  classifyReviewerMissingRepos,
   deploymentActionFor,
   deploymentTargetFingerprint,
   filterMrsForExpectedSha,
+  isReviewerMissingFailure,
   newDeployRecord,
   normalizeRunState,
+  parseCreateRepoResults,
   parseRunOptions,
   pollDeploymentVerification,
   recordTargetFingerprint,
@@ -439,4 +442,67 @@ test("rejects branches that are not dev-f-* or dev-bg-*", () => {
     assert.equal(resolved.fBranch, undefined, `分支 ${branch} 不应被接受`);
     assert.match(resolved.error, /dev-f-\* 或 dev-bg-\*/);
   }
+});
+
+test("parses per-repo create success and reviewer-missing failures", () => {
+  const parsed = parseCreateRepoResults(
+    "应用分支 ID：128472\n" +
+    "成功仓库：https://git.myscrm.cn/ai-sale/bff-ai-sale-inquries-bg\n" +
+    "失败仓库：https://git.myscrm.cn/middletest/prod/330a8c33-668d-43c2-a2a1-aaaac27f4847: 获取审核人Id失败: [liangkd01]用户不存在\n",
+  );
+
+  assert.deepEqual(parsed.succeeded, ["https://git.myscrm.cn/ai-sale/bff-ai-sale-inquries-bg"]);
+  assert.deepEqual(parsed.failed, [{
+    url: "https://git.myscrm.cn/middletest/prod/330a8c33-668d-43c2-a2a1-aaaac27f4847",
+    reason: "获取审核人Id失败: [liangkd01]用户不存在",
+  }]);
+});
+
+test("treats Mars reviewer-id lookup failures as a missing merger", () => {
+  assert.equal(isReviewerMissingFailure("获取审核人Id失败: [liangkd01]用户不存在"), true);
+  assert.equal(isReviewerMissingFailure("创建mr失败：分支无差异"), false);
+});
+
+test("skips non-primary repos whose merger list does not include the reviewer", () => {
+  const classified = classifyReviewerMissingRepos(
+    [{
+      url: "https://git.myscrm.cn/middletest/prod/330a8c33-668d-43c2-a2a1-aaaac27f4847",
+      reason: "获取审核人Id失败: [liangkd01]用户不存在",
+    }],
+    {
+      primaryUrl: "https://git.myscrm.cn/ai-sale/bff-ai-sale-inquries-bg",
+      auditUser: "liangkd01",
+    },
+  );
+
+  assert.equal(classified.hard.length, 0);
+  assert.equal(classified.skipped.length, 1);
+  assert.equal(
+    classified.skipped[0].repository,
+    "https://git.myscrm.cn/middletest/prod/330a8c33-668d-43c2-a2a1-aaaac27f4847",
+  );
+  assert.match(classified.skipped[0].reason, /liangkd01/);
+  assert.match(classified.skipped[0].reason, /MR 合并人/);
+});
+
+test("does not skip the primary repo or unrelated create failures", () => {
+  const classified = classifyReviewerMissingRepos(
+    [
+      {
+        url: "https://git.myscrm.cn/ai-sale/bff-ai-sale-inquries-bg/",
+        reason: "获取审核人Id失败: [liangkd01]用户不存在",
+      },
+      {
+        url: "https://git.myscrm.cn/middletest/prod/other",
+        reason: "创建mr失败：分支冲突",
+      },
+    ],
+    {
+      primaryUrl: "https://git.myscrm.cn/ai-sale/bff-ai-sale-inquries-bg",
+      auditUser: "liangkd01",
+    },
+  );
+
+  assert.equal(classified.skipped.length, 0);
+  assert.equal(classified.hard.length, 2);
 });
