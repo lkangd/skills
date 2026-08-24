@@ -23,6 +23,7 @@ const {
   resolveStartStep,
   resolveTargetShaOnBranch,
   shaOnBranch,
+  shouldCarryOverTrigger,
   stateMatchesRun,
   targetShaCandidates,
   triggerAndVerify,
@@ -512,6 +513,30 @@ test("a rejected trigger is never followed by verification polling", async () =>
   assert.equal(record.status, "failed");
   assert.equal(record.unsupported, true);
   assert.equal(deploymentActionFor(record), "blocked");
+});
+
+test("does not trust an hours-old accepted trigger after the target changed", () => {
+  // 2026-08-24 实测复现：进程被杀死、resume_from 没能落盘 → 整条流水线从 sync 重跑一遍，
+  // create 阶段因为空 MR 修复把目标从 41f45411 换成了 c60affe123，指纹因此改变；
+  // 3.5 小时前的 03:03 触发被当成「还在跑」，deploy 只验证不重触发，白等满 10 分钟。
+  const now = () => Date.parse("2026-08-24T06:32:00.000Z");
+
+  assert.equal(
+    shouldCarryOverTrigger({ trigger_status: "accepted", trigger_started_at: "2026-08-24T06:25:00.000Z" }, now),
+    true, "同一次运行内几分钟前的触发应该继续只验证",
+  );
+  assert.equal(
+    shouldCarryOverTrigger({ trigger_status: "accepted", trigger_started_at: "2026-08-24T03:03:15.437Z" }, now),
+    false, "3.5 小时前的旧触发不该被当成还在跑",
+  );
+  assert.equal(
+    shouldCarryOverTrigger({ trigger_status: "rejected", trigger_started_at: "2026-08-24T06:31:00.000Z" }, now),
+    false, "被拒绝的触发本来就不该被继承",
+  );
+  assert.equal(
+    shouldCarryOverTrigger({ trigger_status: "accepted", trigger_started_at: null }, now),
+    false, "没有触发时刻就没法证明它还新鲜",
+  );
 });
 
 test("waits out the Mars snapshot window only while the merge is fresh", async () => {

@@ -910,6 +910,12 @@ const MARS_SETTLE_MS = Number.isFinite(Number(process.env.SHIP_TO_TEST_MARS_SETT
   : 30000;
 const MAX_TRIGGER_ATTEMPTS = 3;
 const RETRIGGER_BACKOFF_MS = 60000;
+// 目标 SHA 指纹变化时，「旧触发可能还在跑，先别重复触发」这个假设只在同一次运行内重新
+// 解析目标（如合并侧 SHA 换了一种取法）时成立——那次触发确实是几秒前才发出去的。
+// 如果是进程被杀死、resume_from 没能落盘导致整条流水线从 sync 重新跑一遍（用户在
+// 2026-08-24 复现过），旧触发可能是几个小时前的，早已经跟当前目标无关；继续把它当成
+// 「还在跑」只会验证一个根本没人重新触发过的目标，白等一整个轮询窗口。
+const FINGERPRINT_CARRY_MAX_MS = 20 * 60 * 1000;
 
 function targetShaCandidates(mr) {
   // 空 MR 被关闭的场景：本轮提交本身就已经在目标分支上，它就是要在测试分支上验证的提交。
@@ -1409,6 +1415,14 @@ async function triggerAndVerify(env, state, target, envBranch, record, overrides
   }
 }
 
+// 目标 SHA 指纹变化时，判断刚才那次触发是不是新鲜到还值得只验证、不重触发。
+function shouldCarryOverTrigger(record, nowFn = Date.now) {
+  if (!["accepted", "possibly_accepted"].includes(record.trigger_status)) return false;
+  const startedAt = Date.parse(record.trigger_started_at || "");
+  if (!Number.isFinite(startedAt)) return false;
+  return nowFn() - startedAt <= FINGERPRINT_CARRY_MAX_MS;
+}
+
 async function stepDeploy(env, state) {
   await prepareDeploymentTargets(env, state);
 
@@ -1426,8 +1440,8 @@ async function stepDeploy(env, state) {
       const currentFingerprint = deploymentTargetFingerprint(state, envBranch);
       const savedFingerprint = record.target_fingerprint || recordTargetFingerprint(record);
       if (savedFingerprint && savedFingerprint !== currentFingerprint) {
-        const previousTriggerMayBeRunning = ["accepted", "possibly_accepted"].includes(record.trigger_status);
-        console.log(`NOTE: ${target.env_code} 的本轮目标 SHA 已变化，废弃旧验证结果${previousTriggerMayBeRunning ? "并只验证原触发" : ""}`);
+        const previousTriggerMayBeRunning = shouldCarryOverTrigger(record);
+        console.log(`NOTE: ${target.env_code} 的本轮目标 SHA 已变化，废弃旧验证结果${previousTriggerMayBeRunning ? "并只验证原触发" : "（旧触发已过期，将重新触发）"}`);
         record = previousTriggerMayBeRunning
           ? newDeployRecord(target, envBranch, {
             status: "verifying",
@@ -1672,6 +1686,7 @@ module.exports = {
   resolveStartStep,
   resolveTargetShaOnBranch,
   shaOnBranch,
+  shouldCarryOverTrigger,
   stateMatchesRun,
   targetShaCandidates,
   triggerAndVerify,
