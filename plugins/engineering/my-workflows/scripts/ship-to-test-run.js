@@ -4,8 +4,14 @@
 //   sync   → git pull --rebase + git push
 //   plan   → yunke-cli 查询链（分支状态/仓库/应用/审核人）并落状态文件
 //   create → 创建 MR 并通过 GitLab API 反查 + 校验 MR 确实对应本次提交
-//   merge  → 调用 GitLab API 合并 MR
+//   merge  → 调用 GitLab API 合并 MR；合不了但本轮提交已经在 f 上的空 MR（上一轮已合并过）
+//            关掉后继续走，其余合并失败一律停下
 //   deploy → 确认合并已落到 f 分支后，对全部接测目标逐个部署并原样打印结果
+//
+// 关于「空接测」：GitLab 的 f 分支已经包含本轮合并，不代表 Mars 也看见了——Mars 接测读的是
+// 它自己那份 f 分支快照，刚合并就触发会把「合并前的 f」发到测试分支。deploy 因此做两件事：
+// 触发前按合并时刻补足静默期（MARS_SETTLE_MS）；触发后若在环境分支上发现本 f 分支的接测
+// 合并却仍不含目标提交（stale_deploy），判定为发了旧快照并有限次重触发。
 //
 // 输出协议（供 agent 解析）：
 //   STATUS:   OK | NEED_USER | ERROR（唯一的成败判据，缺失即未完成）
@@ -252,9 +258,15 @@ function normalizeRunState(state, prevSkippedEnvs = [], runOpts = opts, env = nu
   if (!state.origin && env) state.origin = env.origin;
   state.skipped_envs = [...new Set([...prevSkippedEnvs, ...(state.skipped_envs || []), ...runOpts.skipEnvs])];
   state.skipped_repos = Array.isArray(state.skipped_repos) ? state.skipped_repos : [];
+  state.closed_mrs = Array.isArray(state.closed_mrs) ? state.closed_mrs : [];
   state.deploy_results = state.deploy_results || {};
   for (const record of Object.values(state.deploy_results)) {
     if (!record) continue;
+    // 旧版本写下的仓库条目没有 f_branch，补齐后续跑才认得出「接测发的是旧快照」。
+    for (const repo of Object.values(record.repositories || {})) {
+      repo.f_branch = repo.f_branch || state.f_branch || null;
+      repo.env_branch = repo.env_branch || record.env_branch || ENV_BRANCH_BY_CODE[record.env_code] || null;
+    }
     if (record.status === "ok") {
       record.status = "verifying";
       record.trigger_status = record.trigger_status || "accepted";
@@ -463,6 +475,7 @@ function stepPlan(env, prevSkippedEnvs = [], prevDeployResults = {}) {
     // 上一轮明确决定跳过的环境（如平台侧不支持接测）继续沿用，避免每轮都卡在同一个环境
     skipped_envs: prevSkippedEnvs,
     skipped_repos: [],
+    closed_mrs: [],
     // 同一轮里重跑 plan（如旧状态缺字段）时必须继承已受理的触发，否则会在 Mars 滞后窗口
     // 重复触发同一次接测。目标 SHA 变了的记录会在 stepDeploy 的指纹检查里作废。
     deploy_results: prevDeployResults,
@@ -698,6 +711,10 @@ async function stepCreate(env, state) {
           iid: null, web_url: null, state: "merged",
           expected_sha: expected.sha, mr_head_sha: expected.sha,
           merge_commit_sha: null, squash_commit_sha: null, merged_sha: expected.sha,
+          // 这里唯一被证明的事实就是「本轮提交已经在目标分支上」，没有目标侧 merge/squash
+          // 可用。用同一个标记，让 deploy 前的落地确认走包含判定，而不是要求 f 的 tip
+          // 恰好等于它（上一轮合并过之后 tip 必然已经前进，那个判据永远不成立）。
+          already_on_target: true,
         });
         continue;
       }
@@ -742,10 +759,66 @@ function applyMergedMrInfo(mr, body, { keepState = false } = {}) {
   }
   mr.state = keepState ? (body.state || mr.state) : "merged";
   mr.mr_head_sha = mergedHead || mr.mr_head_sha;
+  // 合并时刻用于计算「Mars 还需要多久才可能看见这次合并」的静默期
+  mr.merged_at = body.merged_at || mr.merged_at || null;
   mr.merge_commit_sha = body.merge_commit_sha || mr.merge_commit_sha || null;
   mr.squash_commit_sha = body.squash_commit_sha || mr.squash_commit_sha || null;
   mr.merged_sha = mr.merge_commit_sha || mr.squash_commit_sha || body.sha || mr.merged_sha || null;
   return { ok: true };
+}
+
+// 「本轮内容已经在 f 分支上」的两种形态：正常合并完成，或者本轮的 MR 里其实没有可合并的
+// 内容、已被关闭。两者都可以往下走 deploy，其它状态都不行。
+function isSettledMr(mr) {
+  return mr.state === "merged" || mr.already_on_target === true;
+}
+
+// 上一轮已经把同样的提交合进 f 时，这一轮建出来的 MR 里没有任何可合并的内容，GitLab 会拒绝
+// 合并（detailed_merge_status: commits_status）。这种空 MR 关掉继续走即可——但前提是先证明
+// 「本轮提交确实已经在目标分支上」。证明不了就不是空 MR，而是真的合不了，必须报错停下。
+async function closeMrWithNothingToMerge(state, mr, latestBody, fetchFn = glFetch) {
+  const projBase = projBaseOf(mr);
+
+  // 「提交在 f 上 ⇒ MR 是空的」只有在 MR 头还是本轮那个提交时才成立。有人往同一 dev 分支
+  // 又推了提交时，MR 里装着还没合并的东西，关掉它等于把别人的改动悄悄丢掉。
+  // 读不到当前 head 就证明不了，一律不关（fail closed）。
+  const head = mrHeadSha(latestBody);
+  if (head !== mr.expected_sha) {
+    return { empty: false, head_moved: head || null };
+  }
+
+  const landed = await shaOnBranch(projBase, mr.expected_sha, state.f_branch, fetchFn);
+  if (landed.error) return { error: landed.error };
+  if (!landed.on) return { empty: false };
+
+  // 本轮提交已经在目标分支上 ⇒ 源分支到它为止的内容全部都在，MR 确实是空的。
+  // target_sha 仍然留给 deploy 前的落地确认去解析，保证「要接测的提交」只有那一个出处。
+  mr.already_on_target = true;
+  mr.closed_reason = `本轮提交 ${String(mr.expected_sha).slice(0, 10)} 已经在 ${state.f_branch} 上（上一轮已合并），该 MR 没有可合并的内容`;
+
+  const res = await fetchFn(`${projBase}/merge_requests/${mr.iid}?state_event=close`, "PUT");
+  if (res.status === 200 && res.body && res.body.state === "closed") {
+    mr.state = "closed";
+    mr.close_error = null;
+  } else {
+    // 关不掉不影响「代码已经在 f 上」这个事实，流程继续，但必须如实上报。
+    mr.close_error = `关闭 MR !${mr.iid} 失败 HTTP ${res.status}: ${JSON.stringify(res.body).slice(0, 300)}`;
+  }
+  return { empty: true, closed: !mr.close_error };
+}
+
+function recordClosedMr(state, mr) {
+  state.closed_mrs = Array.isArray(state.closed_mrs) ? state.closed_mrs : [];
+  const key = `${mr.gl_project_path}#${mr.iid}`;
+  if (state.closed_mrs.some((item) => `${item.gl_project_path}#${item.iid}` === key)) return;
+  state.closed_mrs.push({
+    gl_project_path: mr.gl_project_path,
+    iid: mr.iid,
+    web_url: mr.web_url,
+    expected_sha: mr.expected_sha,
+    reason: mr.closed_reason,
+    close_error: mr.close_error || null,
+  });
 }
 
 async function stepMerge(env, state) {
@@ -753,7 +826,7 @@ async function stepMerge(env, state) {
     stop("ERROR", "merge", "状态文件中没有 MR 记录，无法合并，请从 create 步骤重跑", "create");
   }
   for (const mr of state.mrs) {
-    if (mr.state === "merged") continue;
+    if (isSettledMr(mr)) continue;
     const base = `${projBaseOf(mr)}/merge_requests/${mr.iid}`;
 
     // 等待 GitLab 完成可合并性检查；若上次 PUT 已成功但脚本未落盘，先对账再决定是否发送 PUT。
@@ -790,11 +863,35 @@ async function stepMerge(env, state) {
       saveState(env, state);
       continue;
     }
+
+    // 「MR 建出来了却合不了」最常见的原因是这次要合的内容上一轮已经进了 f。
+    // 判据要用刚刚取回的 MR 实况（after.body），而不是 create 时的旧认知。
+    const emptied = await closeMrWithNothingToMerge(state, mr, after.body);
+    if (emptied.error) {
+      stop("ERROR", "merge", `判断 ${mr.web_url} 是否为空 MR 时 ${emptied.error}`, "merge");
+    }
+    if (emptied.empty) {
+      recordClosedMr(state, mr);
+      saveState(env, state);
+      console.log(`NOTE: ${mr.web_url} 无可合并内容（${mr.closed_reason}）` +
+        (mr.close_error ? `，关闭失败：${mr.close_error}；` : `，已关闭该 MR；`) +
+        `本轮内容已在 ${state.f_branch} 上，继续后续流程`);
+      continue;
+    }
+
     stop("ERROR", "merge",
-      `合并 ${mr.web_url} 失败 HTTP ${res.status}（常见原因: 流水线未通过/需要审批/存在冲突）:\n${JSON.stringify(res.body).slice(0, 1200)}\n请向用户说明并等待处理，处理完后续跑`,
+      `合并 ${mr.web_url} 失败 HTTP ${res.status}（常见原因: 流水线未通过/需要审批/存在冲突）。` +
+      (emptied.head_moved
+        ? `另注：该 MR 当前 head 是 ${emptied.head_moved.slice(0, 10)}，已经不是本轮提交 ` +
+          `${String(mr.expected_sha).slice(0, 10)}（dev 分支上有本轮之外的新提交），因此不能按「空 MR」关闭；` +
+          `请先确认这些提交是否也要一起接测。`
+        : emptied.head_moved === null
+          ? `另注：这次没能读到该 MR 的当前 head，无法证明它是「空 MR」，因此没有关闭它。`
+          : `已确认本轮提交 ${String(mr.expected_sha).slice(0, 10)} 还不在 ${state.f_branch} 上，所以不是「无内容可合并的空 MR」。`) +
+      `\n${JSON.stringify(res.body).slice(0, 1200)}\n请向用户说明并等待处理，处理完后续跑`,
       "merge");
   }
-  stepOk("merge", state.mrs.map((m) => m.web_url || m.merged_sha).join(", "));
+  stepOk("merge", state.mrs.map((m) => `${m.web_url || m.merged_sha}${m.already_on_target ? "(closed:空 MR)" : ""}`).join(", "));
 }
 
 // GitLab 的 merge API 返回 merged 只代表受理。部署前先解析真正落到 f 的目标侧 SHA，
@@ -803,8 +900,22 @@ const LAND_POLL_TRIES = 20;
 const LAND_POLL_INTERVAL_MS = 3000;
 const VERIFY_POLL_TRIES = 61;
 const VERIFY_POLL_INTERVAL_MS = 10000;
+// 「目标侧 SHA 已在 GitLab 的 f 分支上」并不代表 Mars 也看见了：Mars 接测读的是它自己那份
+// f 分支快照，MR 刚合并就触发会把「合并前的 f」发到测试分支（空接测）。两道防线：
+//   1) 合并落地后先补足静默期再触发，让 Mars 有时间刷新（不够也不会误判，只是概率问题）；
+//   2) 真的发生了就检测出来并重新触发——这是唯一能救回来的动作，光继续等永远等不到。
+// 写错环境变量不能把静默期悄悄关掉（NaN 会让 sleep 立即返回），非法值一律回落到默认值。
+const MARS_SETTLE_MS = Number.isFinite(Number(process.env.SHIP_TO_TEST_MARS_SETTLE_MS))
+  ? Number(process.env.SHIP_TO_TEST_MARS_SETTLE_MS)
+  : 30000;
+const MAX_TRIGGER_ATTEMPTS = 3;
+const RETRIGGER_BACKOFF_MS = 60000;
 
 function targetShaCandidates(mr) {
+  // 空 MR 被关闭的场景：本轮提交本身就已经在目标分支上，它就是要在测试分支上验证的提交。
+  if (mr.already_on_target && mr.expected_sha) {
+    return [{ sha: mr.expected_sha, kind: "already_on_target" }];
+  }
   const targetSide = [
     { sha: mr.merge_commit_sha, kind: "merge_commit" },
     { sha: mr.squash_commit_sha, kind: "squash_commit" },
@@ -855,7 +966,7 @@ async function prepareDeploymentTargets(env, state) {
     stop("ERROR", "deploy", "状态文件中没有本轮 MR 记录，不能验证要进入测试分支的目标提交", "create");
   }
   for (const mr of state.mrs) {
-    if (mr.state !== "merged") {
+    if (!isSettledMr(mr)) {
       stop("ERROR", "deploy", `${mr.web_url} 仍未合并（state: ${mr.state}），不能部署，请先完成 merge 步骤`, "merge");
     }
 
@@ -873,6 +984,9 @@ async function prepareDeploymentTargets(env, state) {
         if (resolved.sha) {
           mr.target_sha = resolved.sha;
           mr.target_sha_kind = resolved.kind;
+          // 静默期的兜底基准：GitLab 没给 merged_at 时，用「确认落地」这一刻代替，
+          // 免得每个环境都按「刚刚合并」重新等满一次。
+          mr.landed_confirmed_at = mr.landed_confirmed_at || new Date().toISOString();
           console.log(`合并落地确认: ${mr.gl_project_path} 的 ${state.f_branch} 已包含目标侧提交 ${resolved.sha.slice(0, 10)}（${resolved.kind}，第 ${attempt} 次检查）`);
           break;
         }
@@ -908,16 +1022,76 @@ async function getBranchTip(projBase, branch, fetchFn = glFetch) {
   return { sha: result.body.commit.id };
 }
 
+// Mars 接测把 f 分支合进环境分支时，会先建一个 temp-<f分支当时的SHA前缀>-<f分支>-<环境分支>
+// 的中转分支，并把它原样写进合并提交标题。分支名整体匹配（后面必须紧跟 -<环境分支>'），
+// 否则 f-...-2 会被 f-...-22 的接测提交误判成自己的。
+function marsDeployMergePattern(fBranch, envBranch) {
+  const esc = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^Merge branch '(temp-([0-9a-f]{6,40})-${esc(fBranch)}-${esc(envBranch)})' into '${esc(envBranch)}'`);
+}
+
+function matchMarsDeployMerge(title, pattern) {
+  const matched = pattern.exec(String(title || "").split(/\r?\n/)[0].trim());
+  return matched ? { temp_branch: matched[1], source_sha: matched[2] } : null;
+}
+
+function parseMarsDeployMerge(title, fBranch, envBranch) {
+  return matchMarsDeployMerge(title, marsDeployMergePattern(fBranch, envBranch));
+}
+
+// 基线 SHA 之后进入环境分支的提交。用 compare 而不是按时间筛：不受时钟偏差影响，也不会
+// 把本分支上一轮的接测提交算进来。
+async function commitsSinceBaseline(projBase, fromSha, toBranch, fetchFn = glFetch) {
+  let result;
+  try {
+    result = await fetchFn(`${projBase}/repository/compare?from=${encodeURIComponent(fromSha)}&to=${encodeURIComponent(toBranch)}`);
+  } catch (error) {
+    return { retryable: true, error: `GitLab 对比 ${fromSha} → ${toBranch} 网络异常: ${error.message || error}` };
+  }
+  if (result.status !== 200 || !result.body || !Array.isArray(result.body.commits)) {
+    return {
+      retryable: result.status === 429 || result.status >= 500,
+      error: `GitLab 对比 ${fromSha} → ${toBranch} 失败 HTTP ${result.status}: ${JSON.stringify(result.body).slice(0, 500)}`,
+    };
+  }
+  return { commits: result.body.commits };
+}
+
+// 「本轮基线之后，环境分支上出现了属于本 f 分支的接测合并，但目标提交仍不在分支上」
+// ＝ 这次接测确实跑完了，只是 Mars 用的是合并前的旧快照。继续等待永远等不到，必须重触发。
+async function findStaleDeploy(repository, branchSha, fetchFn = glFetch) {
+  if (!repository.baseline_branch_sha || !repository.f_branch) return {};
+  // 分支自基线以来没动过就没有新提交可查，省掉每 10 秒一次的 compare 请求。
+  if (branchSha && branchSha === repository.baseline_branch_sha) return {};
+  const compared = await commitsSinceBaseline(
+    repository.proj_base, repository.baseline_branch_sha, repository.env_branch, fetchFn);
+  if (compared.error) return { error: compared.error };
+  const pattern = marsDeployMergePattern(repository.f_branch, repository.env_branch);
+  for (const commit of compared.commits) {
+    const parsed = matchMarsDeployMerge(commit.title || commit.message, pattern);
+    if (parsed) return { stale: { deploy_commit: commit.id, ...parsed } };
+  }
+  return {};
+}
+
 async function checkRepositoryDeployment(repository, fetchFn = glFetch) {
   const [tip, landed] = await Promise.all([
     getBranchTip(repository.proj_base, repository.env_branch, fetchFn),
     shaOnBranch(repository.proj_base, repository.target_sha, repository.env_branch, fetchFn),
   ]);
-  return {
+  const observed = {
     on: landed.on === true,
     branch_sha: tip.sha || null,
     error: tip.error || landed.error || null,
   };
+  // 只有「目标不在分支上」才需要区分「还没发过来」和「发过来的是旧快照」。
+  // 记录基线时 repository 还没有 baseline_branch_sha，findStaleDeploy 会直接返回，不产生额外请求。
+  if (observed.on || observed.error) return observed;
+  const stale = await findStaleDeploy(repository, observed.branch_sha, fetchFn);
+  if (stale.stale) observed.stale = stale.stale;
+  // 旧快照检测只是诊断，失败不应该让整轮验证报错，但要留痕。
+  else if (stale.error) observed.stale_error = stale.error;
+  return observed;
 }
 
 // 指纹用于判断「已保存的验证结果是否仍对应本轮目标」。两个入口必须产出逐字节一致的字符串，
@@ -948,6 +1122,8 @@ async function captureDeploymentBaseline(state, envBranch, checkFn = checkReposi
       project_path: mr.gl_project_path,
       proj_base: projBaseOf(mr),
       env_branch: envBranch,
+      // 旧快照检测要用它还原 Mars 的中转分支名
+      f_branch: state.f_branch,
       target_sha: mr.target_sha,
     };
     const observed = await checkFn(repository);
@@ -976,13 +1152,20 @@ async function pollDeploymentVerification(record, options = {}) {
   for (let attempt = 1; attempt <= maxTries; attempt++) {
     const observations = await Promise.all(repositories.map((repo) => checkFn(repo)));
     let allPresent = repositories.length > 0;
+    const staleDeploys = [];
     for (let index = 0; index < repositories.length; index++) {
       const repo = repositories[index];
       const observed = observations[index];
       repo.observed_branch_sha = observed.branch_sha || repo.observed_branch_sha || null;
-      repo.last_error = observed.error || null;
+      repo.last_error = observed.error || observed.stale_error || null;
       if (observed.on) repo.verified_at = repo.verified_at || nowFn();
-      else allPresent = false;
+      else {
+        allPresent = false;
+        if (observed.stale) {
+          repo.stale_deploy = { ...observed.stale, project_path: repo.project_path, detected_at: nowFn() };
+          staleDeploys.push(repo.stale_deploy);
+        }
+      }
     }
     record.verification_attempts = attempt;
     record.last_checked_at = nowFn();
@@ -995,6 +1178,13 @@ async function pollDeploymentVerification(record, options = {}) {
       record.verified_at = nowFn();
       await onProgress(record);
       return { verified: true };
+    }
+    if (staleDeploys.length) {
+      // 已经证实这次接测发出去的是合并前的旧提交，再等下去不会有结果，交回上层重触发。
+      record.status = "stale_deploy";
+      record.verification_status = "stale_deploy";
+      await onProgress(record);
+      return { verified: false, stale: staleDeploys };
     }
     record.status = "verifying";
     record.verification_status = "pending";
@@ -1009,6 +1199,30 @@ function verificationTimeoutDetail(record) {
     `${repo.project_path}: target=${repo.target_sha}, baseline=${repo.baseline_branch_sha || "(无)"}, ` +
     `last=${repo.observed_branch_sha || "(无)"}${repo.last_error ? `, error=${repo.last_error}` : ""}`
   ).join("; ");
+}
+
+function staleDeployDetail(record) {
+  return (record.stale_deploys || []).map((stale) =>
+    `第 ${stale.attempt} 次接测把 f 分支的 ${stale.source_sha} 发到了 ${record.env_branch}（合并提交 ${String(stale.deploy_commit).slice(0, 10)}）`
+  ).join("; ");
+}
+
+// Mars 的接测读的是它自己那份 f 分支快照，MR 刚合并就触发大概率发出「合并前」的代码。
+// 按合并时刻补足静默期（续跑时通常已经过去，等于不等），把无效接测挡在发生之前。
+async function waitForMarsToSeeMerge(state, sleepFn = sleep, nowFn = Date.now) {
+  // 本轮没有新合并（MR 都是上一轮就合过的空 MR）时，Mars 早就看见了，不需要静默期。
+  const freshlyMerged = (state.mrs || []).filter((mr) => !mr.already_on_target);
+  if (!freshlyMerged.length) return 0;
+  const mergedAt = freshlyMerged
+    .map((mr) => Date.parse(mr.merged_at || mr.landed_confirmed_at || ""))
+    .filter((time) => Number.isFinite(time));
+  // 连落地确认时刻都没有时按「刚刚合并」处理：宁可多等，也不要再发一次旧代码。
+  const newest = mergedAt.length ? Math.max(...mergedAt) : nowFn();
+  const remain = MARS_SETTLE_MS - (nowFn() - newest);
+  if (remain <= 0) return 0;
+  console.log(`合并落地后再等 ${Math.ceil(remain / 1000)} 秒触发接测，避免 Mars 仍用合并前的 f 分支快照`);
+  await sleepFn(remain);
+  return remain;
 }
 
 function printDeployOutput(target, out) {
@@ -1042,6 +1256,8 @@ function newDeployRecord(target, envBranch, overrides = {}) {
     verification_mode: null,
     target_fingerprint: null,
     repositories: {},
+    trigger_attempts: 0,
+    stale_deploys: [],
     reason: "",
     ...overrides,
   };
@@ -1050,10 +1266,147 @@ function newDeployRecord(target, envBranch, overrides = {}) {
 function deploymentActionFor(record) {
   if (!record) return "trigger";
   if (record.status === "verified") return "skip";
+  // 已证实上一次接测发的是合并前的旧快照：重触发是唯一出路，不能只继续验证。
+  // triggering 表示重触发还没确认被受理（进程死在触发中途）。此时重取的基线已经把那次
+  // 旧快照合并排除在检测之外，只验证就永远等不到目标提交，所以旧快照的证明必须压过它。
+  if (record.status === "stale_deploy" ||
+    (record.status === "triggering" && (record.stale_deploys || []).length)) return "trigger";
   if (["triggering", "verifying"].includes(record.status)) return "verify";
   // 平台已明确「不支持该环境接测」时重试永远不会成功，只能由用户决定跳过。
   if (record.unsupported) return "blocked";
   return "trigger";
+}
+
+// 恢复续跑：沿用同一次触发，只补齐验证需要的字段，绝不再调用接测命令。
+async function resumeVerification(env, state, target, envBranch, record, deps) {
+  record.env_branch = envBranch;
+  if (!record.repositories || !Object.keys(record.repositories).length) {
+    const baseline = await deps.baselineFn(state, envBranch);
+    if (baseline.error) stop("ERROR", "deploy", `恢复 ${target.env_code} 内容验证失败: ${baseline.error}`, "deploy");
+    record.repositories = baseline.repositories;
+    record.target_fingerprint = deploymentTargetFingerprint(state, envBranch);
+    // 旧状态发生在触发之后，此时看到目标 SHA 不能归因到新的触发前基线。
+    for (const repo of Object.values(record.repositories)) repo.target_present_before = null;
+  }
+  if (record.status === "triggering") {
+    record.status = "verifying";
+    record.trigger_status = record.trigger_status === "pending" ? "possibly_accepted" : record.trigger_status;
+  }
+  saveState(env, state);
+  console.log(`\n===== 继续验证 ${target.env_code}（${target.env_name}），不会重复触发接测 =====`);
+  return record;
+}
+
+// 触发一次接测：等待（首次是 Mars 静默期，重触发是退避）→ 取基线 → 调用接测命令。
+// 返回的 record 已经落盘，status 说明还要不要继续验证。
+async function triggerOnce(env, state, target, envBranch, record, deps) {
+  const attempts = (record && record.trigger_attempts) || 0;
+  const staleDeploys = (record && record.stale_deploys) || [];
+
+  if (attempts > 0) {
+    console.log(`\n===== 重新触发 ${target.env_code}（${target.env_name}）第 ${attempts + 1} 次：上一次接测发的是合并前的旧提交 =====`);
+    console.log(`先等待 ${Math.round(RETRIGGER_BACKOFF_MS / 1000)} 秒，让 Mars 侧的 f 分支快照追上本轮合并`);
+    await deps.sleepFn(RETRIGGER_BACKOFF_MS);
+  } else {
+    await waitForMarsToSeeMerge(state, deps.sleepFn);
+  }
+
+  // 退避/静默期内目标可能已经自己进来了，所以基线必须在等待之后取。
+  const baseline = await deps.baselineFn(state, envBranch);
+  if (baseline.error) {
+    stop("ERROR", "deploy", `记录 ${target.env_code} 部署前基线失败: ${baseline.error}`, "deploy");
+  }
+  record = newDeployRecord(target, envBranch, {
+    status: baseline.all_present ? "verified" : "triggering",
+    trigger_status: baseline.all_present ? "not_needed" : "pending",
+    verification_status: baseline.all_present ? "verified" : "pending",
+    verification_mode: baseline.all_present ? "already_present" : null,
+    target_fingerprint: deploymentTargetFingerprint(state, envBranch),
+    repositories: baseline.repositories,
+    trigger_attempts: attempts,
+    stale_deploys: staleDeploys,
+    baseline_captured_at: deps.nowFn(),
+  });
+  state.deploy_results[target.env_code] = record;
+  saveState(env, state);
+
+  if (baseline.all_present) {
+    record.verified_at = deps.nowFn();
+    for (const repo of Object.values(record.repositories)) repo.verified_at = record.verified_at;
+    saveState(env, state);
+    console.log(`\n===== ${target.env_code}（${target.env_name}）：本轮目标提交在触发前已位于 ${envBranch}，不重复触发 =====`);
+    return record;
+  }
+
+  record.trigger_started_at = deps.nowFn();
+  saveState(env, state);
+  const fired = deps.triggerFn(state, target);
+  record.trigger_attempts = attempts + 1;
+  record.exit_code = fired.out.res.status;
+  if (!fired.accepted && !fired.possiblyAccepted) {
+    record.status = "failed";
+    record.trigger_status = "rejected";
+    record.unsupported = fired.unsupported;
+    record.reason = fired.out.reason.slice(0, 500);
+    saveState(env, state);
+    return record;
+  }
+  record.status = "verifying";
+  record.trigger_status = fired.accepted ? "accepted" : "possibly_accepted";
+  record.trigger_accepted_at = deps.nowFn();
+  record.reason = fired.accepted ? "" : `触发输出无法确认是否已受理；为避免重复触发，只继续验证目标提交。${fired.out.reason.slice(0, 300)}`;
+  saveState(env, state);
+  return record;
+}
+
+// 单个环境的「触发 + 内容验证」。只有一种情况允许再次调用接测命令：已经证实上一次接测
+// 把合并前的旧快照发到了环境分支（stale_deploy）——此时继续等待永远等不到目标提交，
+// 重触发是唯一出路。其余情况（只是还没等到）仍然一次都不重复触发。
+async function triggerAndVerify(env, state, target, envBranch, record, overrides = {}) {
+  const deps = {
+    sleepFn: sleep,
+    nowFn: () => new Date().toISOString(),
+    triggerFn: triggerDeploy,
+    baselineFn: (currentState, branch) => captureDeploymentBaseline(currentState, branch),
+    pollFn: pollDeploymentVerification,
+    ...overrides,
+  };
+
+  for (;;) {
+    record = deploymentActionFor(record) === "verify"
+      ? await resumeVerification(env, state, target, envBranch, record, deps)
+      : await triggerOnce(env, state, target, envBranch, record, deps);
+    // 触发被拒绝 / 基线里目标已经在了：都不需要再验证。
+    if (record.status !== "verifying") return record;
+
+    const verified = await deps.pollFn(record, { onProgress: () => saveState(env, state) });
+    if (verified.verified) return record;
+
+    if (verified.stale) {
+      const attempts = record.trigger_attempts || 0;
+      record.stale_deploys = [
+        ...(record.stale_deploys || []),
+        ...verified.stale.map((stale) => ({ ...stale, attempt: Math.max(attempts, 1) })),
+      ];
+      saveState(env, state);
+      console.log(`\nNOTE: ${target.env_code} 这次接测已经跑完，但 Mars 发出去的是 f 分支合并前的提交 ` +
+        `${verified.stale.map((stale) => stale.source_sha).join(", ")}，目标提交并没有进入 ${envBranch}`);
+      if (attempts < MAX_TRIGGER_ATTEMPTS) continue;
+      record.reason = `已触发 ${attempts} 次接测，其中 ${record.stale_deploys.length} 次被证实发到 ${record.env_branch} 的` +
+        `是本轮合并前的 f 分支提交，目标提交始终没有进入测试分支（${staleDeployDetail(record)}）。` +
+        `这通常说明 Mars 侧的分支快照迟迟没有刷新，需要人工在 Mars 上确认后重新接测。`;
+      saveState(env, state);
+      return record;
+    }
+
+    record.reason = `触发已受理，但等待约 ${Math.round((VERIFY_POLL_TRIES * VERIFY_POLL_INTERVAL_MS) / 60000)} 分钟后，` +
+      `${record.env_branch} 仍未包含本轮全部目标提交。${verificationTimeoutDetail(record)}` +
+      (record.stale_deploys && record.stale_deploys.length
+        ? `；本轮此前已发生过旧快照接测（${staleDeployDetail(record)}）`
+        : "");
+    saveState(env, state);
+    return record;
+  }
 }
 
 async function stepDeploy(env, state) {
@@ -1132,76 +1485,7 @@ async function stepDeploy(env, state) {
       continue;
     }
 
-    if (deploymentActionFor(record) === "trigger") {
-      const baseline = await captureDeploymentBaseline(state, envBranch);
-      if (baseline.error) {
-        stop("ERROR", "deploy", `记录 ${target.env_code} 部署前基线失败: ${baseline.error}`, "deploy");
-      }
-      record = newDeployRecord(target, envBranch, {
-        status: baseline.all_present ? "verified" : "triggering",
-        trigger_status: baseline.all_present ? "not_needed" : "pending",
-        verification_status: baseline.all_present ? "verified" : "pending",
-        verification_mode: baseline.all_present ? "already_present" : null,
-        target_fingerprint: deploymentTargetFingerprint(state, envBranch),
-        repositories: baseline.repositories,
-        baseline_captured_at: new Date().toISOString(),
-      });
-      state.deploy_results[target.env_code] = record;
-      saveState(env, state);
-
-      if (baseline.all_present) {
-        record.verified_at = new Date().toISOString();
-        for (const repo of Object.values(record.repositories)) repo.verified_at = record.verified_at;
-        saveState(env, state);
-        console.log(`\n===== ${target.env_code}（${target.env_name}）：本轮目标提交在触发前已位于 ${envBranch}，不重复触发 =====`);
-        results.push(record);
-        continue;
-      }
-
-      record.trigger_started_at = new Date().toISOString();
-      saveState(env, state);
-      const fired = triggerDeploy(state, target);
-      record.exit_code = fired.out.res.status;
-      if (!fired.accepted && !fired.possiblyAccepted) {
-        record.status = "failed";
-        record.trigger_status = "rejected";
-        record.unsupported = fired.unsupported;
-        record.reason = fired.out.reason.slice(0, 500);
-        saveState(env, state);
-        results.push(record);
-        continue;
-      }
-      record.status = "verifying";
-      record.trigger_status = fired.accepted ? "accepted" : "possibly_accepted";
-      record.trigger_accepted_at = new Date().toISOString();
-      record.reason = fired.accepted ? "" : `触发输出无法确认是否已受理；为避免重复触发，只继续验证目标提交。${fired.out.reason.slice(0, 300)}`;
-      saveState(env, state);
-    } else {
-      record.env_branch = envBranch;
-      if (!record.repositories || !Object.keys(record.repositories).length) {
-        const baseline = await captureDeploymentBaseline(state, envBranch);
-        if (baseline.error) stop("ERROR", "deploy", `恢复 ${target.env_code} 内容验证失败: ${baseline.error}`, "deploy");
-        record.repositories = baseline.repositories;
-        record.target_fingerprint = deploymentTargetFingerprint(state, envBranch);
-        // 旧状态发生在触发之后，此时看到目标 SHA 不能归因到新的触发前基线。
-        for (const repo of Object.values(record.repositories)) repo.target_present_before = null;
-      }
-      if (record.status === "triggering") {
-        record.status = "verifying";
-        record.trigger_status = record.trigger_status === "pending" ? "possibly_accepted" : record.trigger_status;
-      }
-      saveState(env, state);
-      console.log(`\n===== 继续验证 ${target.env_code}（${target.env_name}），不会重复触发接测 =====`);
-    }
-
-    const verified = await pollDeploymentVerification(record, {
-      onProgress: () => saveState(env, state),
-    });
-    if (!verified.verified) {
-      record.reason = `触发已受理，但等待约 ${Math.round((VERIFY_POLL_TRIES * VERIFY_POLL_INTERVAL_MS) / 60000)} 分钟后，` +
-        `${record.env_branch} 仍未包含本轮全部目标提交。${verificationTimeoutDetail(record)}`;
-      saveState(env, state);
-    }
+    record = await triggerAndVerify(env, state, target, envBranch, record);
     results.push(record);
   }
 
@@ -1210,11 +1494,16 @@ async function stepDeploy(env, state) {
   if (failed.length) {
     const allUnsupported = failed.every((record) => record.unsupported);
     const skipHint = failed.filter((record) => record.unsupported).map((record) => `--skip-env ${record.env_code}`).join(" ");
+    const staleEnvs = failed.filter((record) => record.status === "stale_deploy");
     stop(allUnsupported ? "NEED_USER" : "ERROR", "deploy",
       `以下环境尚未完成内容验证:\n${failed.map((record) => `- ${record.env_code}（${record.env_name}）: ${record.reason}`).join("\n")}\n` +
       `已验证环境: ${results.filter((record) => record.status === "verified").map((record) => record.env_code).join(", ") || "无"}（续跑不会重复触发）\n` +
       (skipHint
         ? `其中平台侧不支持接测的环境重试无意义，请询问用户是否跳过；同意后用 RESUME 续跑。\n`
+        : "") +
+      (staleEnvs.length
+        ? `${staleEnvs.map((record) => record.env_code).join(", ")} 属于「接测跑了但发的是合并前的旧代码」，已自动重触发到上限；` +
+          `续跑会再重新触发（重触发是这种情况唯一的出路），若仍然如此需要人工在 Mars 上排查分支快照。\n`
         : "") +
       `其余环境续跑时只会继续验证同一次触发，不会再次调用接测命令。`,
       "deploy", skipHint);
@@ -1313,6 +1602,7 @@ async function runWorkflow() {
     head_sha: state.run_head_sha,
     merged_mrs: state.mrs.map((mr) => ({
       url: mr.web_url,
+      state: mr.state,
       target_sha: mr.target_sha,
       target_sha_kind: mr.target_sha_kind,
     })),
@@ -1320,7 +1610,12 @@ async function runWorkflow() {
     deploys: deployResults,
     skipped_envs: state.skipped_envs,
     skipped_repos: state.skipped_repos,
+    closed_mrs: state.closed_mrs,
   }, null, 2));
+  if ((state.closed_mrs || []).length) {
+    console.log(`NOTE: 本轮有 MR 因为没有可合并的内容（上一轮已合并过）被关闭: ${state.closed_mrs.map((mr) =>
+      `${mr.gl_project_path} !${mr.iid}（${mr.reason}${mr.close_error ? `；关闭失败: ${mr.close_error}` : "，已关闭"}）`).join("；")}，报告时需如实说明`);
+  }
   if (state.skipped_envs.length) {
     console.log(`NOTE: 本轮跳过了这些环境的接测（用户此前已确认跳过）: ${state.skipped_envs.join(", ")}，报告时需如实说明`);
   }
@@ -1359,11 +1654,15 @@ module.exports = {
   buildTargetFingerprint,
   captureDeploymentBaseline,
   classifyReviewerMissingRepos,
+  closeMrWithNothingToMerge,
   deploymentActionFor,
   deploymentTargetFingerprint,
   filterMrsForExpectedSha,
+  findStaleDeploy,
   isReviewerMissingFailure,
+  isSettledMr,
   newDeployRecord,
+  parseMarsDeployMerge,
   normalizeRunState,
   parseCreateRepoResults,
   parseRunOptions,
@@ -1375,4 +1674,6 @@ module.exports = {
   shaOnBranch,
   stateMatchesRun,
   targetShaCandidates,
+  triggerAndVerify,
+  waitForMarsToSeeMerge,
 };
