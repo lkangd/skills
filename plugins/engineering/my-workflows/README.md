@@ -6,7 +6,7 @@ Personal engineering workflow commands.
 
 ### `/create-dev-worktree <branch-name>`
 
-Creates a sibling git worktree for the current repository and creates or updates a sibling VS Code `.code-workspace` file for the same branch.
+Creates a sibling git worktree for the current repository, creates or updates a sibling VS Code `.code-workspace` file for the same branch, and creates or reuses a cmux workspace with that same branch name.
 
 Use this after creating a remote development branch in the company system.
 
@@ -45,6 +45,15 @@ The workspace entry uses the sibling worktree directory as both `name` and relat
     "settings": {}
 }
 ```
+
+After the VS Code workspace file is written, the command talks to a running cmux instance:
+
+1. Creates a cmux workspace named `dev-f-20260511-auto-aftermarket-for-standard` with two stacked panes in the worktree directory, or reuses that workspace if it already exists.
+2. If the named cmux workspace already has panes for this worktree (the folder was already in the `.code-workspace` file), it only selects that workspace.
+3. If this is a new folder in an existing cmux workspace with one pane, it splits that pane into stacked top and bottom panes and `cd`s both to the worktree.
+4. If this is a new folder in an existing cmux workspace with two or more panes, it splits the rightmost top and bottom panes to the right and `cd`s the new panes to the worktree.
+
+The command requires a running cmux instance; it fails if the CLI is missing or the socket does not respond.
 
 ### `/my-workflows:clean-dev-worktree <branch-name> [--force]`
 

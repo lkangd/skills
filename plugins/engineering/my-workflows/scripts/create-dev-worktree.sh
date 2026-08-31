@@ -77,6 +77,7 @@ else
   fi
 fi
 
+WS_PYTHON_OUT="$(
 WORKSPACE_FILE="${WORKSPACE_FILE}" \
 FOLDER_NAME="${WORKTREE_NAME}" \
 FOLDER_PATH="${WORKTREE_NAME}" \
@@ -123,9 +124,29 @@ if not isinstance(data.get("settings"), dict):
 
 workspace_file.write_text(json.dumps(data, ensure_ascii=False, indent=4) + "\n", encoding="utf-8")
 print(f"Workspace folder {action}: {folder['name']}")
+print(f"WORKSPACE_FOLDER_ACTION={action}")
 PY
+)"
+
+FOLDER_EXISTED=0
+if [[ "${WS_PYTHON_OUT}" == *"WORKSPACE_FOLDER_ACTION=updated"* ]]; then
+  FOLDER_EXISTED=1
+fi
+while IFS= read -r line; do
+  [[ "${line}" == WORKSPACE_FOLDER_ACTION=* ]] && continue
+  printf '%s\n' "${line}"
+done <<< "${WS_PYTHON_OUT}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo
+echo "Setting up cmux workspace..."
+python3 "${SCRIPT_DIR}/setup-cmux-dev-workspace.py" \
+  --name "${BRANCH_NAME}" \
+  --worktree "${WORKTREE_PATH}" \
+  --folder-existed "${FOLDER_EXISTED}"
 
 echo
 echo "Done."
 echo "Worktree path: ${WORKTREE_PATH}"
 echo "Workspace file: ${WORKSPACE_FILE}"
+echo "Cmux workspace: ${BRANCH_NAME}"
