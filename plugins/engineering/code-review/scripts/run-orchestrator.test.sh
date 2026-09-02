@@ -21,6 +21,8 @@ assert_json() {
 FAKE_RUNNER="$TMP_ROOT/fake-runner.sh"
 cat > "$FAKE_RUNNER" <<'EOF'
 #!/usr/bin/env bash
+# Record the launch flags so the test can check how agent definitions reach the session.
+[ -z "${CODE_REVIEW_TEST_ARGS_FILE:-}" ] || printf '%s\n' "$@" > "$CODE_REVIEW_TEST_ARGS_FILE"
 printf '%s\n' '```json' '[]' '```'
 EOF
 chmod +x "$FAKE_RUNNER"
@@ -78,6 +80,7 @@ run_launcher() {
     cd "$REPO"
     CODE_REVIEW_TRANSCRIPT_ROOT="$TMP_ROOT/transcripts" \
       CODE_REVIEW_TEST_RUN_DIR="$run_dir" \
+      CODE_REVIEW_TEST_ARGS_FILE="$run_dir/runner-args.txt" \
       bash "$LAUNCHER" \
       --runner "$runner" \
       --run-dir "$run_dir" \
@@ -116,6 +119,49 @@ for prompt in "$SMALL_RUN"/prompts/*.md; do
     || fail "concretized prompt lost the shared receipt contract: $prompt"
 done
 assert_json "$SMALL_RUN/out/orchestrator.exit" '. == 0'
+
+# Reviewer/verifier definitions are agent files that embed the packet verbatim in their system
+# prompt (one shared, cacheable prefix per tier) and reach the session via --add-dir; the angle
+# prompts must therefore steer reviewers to the addendum instead of re-reading packet.md.
+for agent in reviewer-deep:opus reviewer:sonnet verifier:sonnet; do
+  name="${agent%%:*}"
+  model="${agent##*:}"
+  file="$SMALL_RUN/agents/.claude/agents/$name.md"
+  [ -r "$file" ] || fail "launcher did not write agent definition: $file"
+  [ "$(sed -n '1p' "$file")" = "---" ] || fail "agent file has no leading frontmatter: $file"
+  grep -q "^name: $name\$" "$file" || fail "agent file lacks name $name: $file"
+  grep -q "^model: $model\$" "$file" || fail "agent file lacks model $model: $file"
+  grep -q '^tools: Read, Grep, Glob, Bash$' "$file" || fail "agent file lost its tool allowlist: $file"
+  grep -Fq 'small change' "$file" || fail "agent file does not embed the packet diff: $file"
+  grep -Fq '# Review Packet' "$file" || fail "agent file lacks the packet heading: $file"
+done
+grep -Fxq -- "--add-dir" "$SMALL_RUN/runner-args.txt" \
+  || fail "runner was not launched with --add-dir"
+grep -Fxq -- "$SMALL_RUN/agents" "$SMALL_RUN/runner-args.txt" \
+  || fail "runner --add-dir does not point at the agent directory"
+! grep -Fxq -- "--agents" "$SMALL_RUN/runner-args.txt" \
+  || fail "runner still receives inline --agents JSON"
+for prompt in "$SMALL_RUN"/prompts/*.md; do
+  grep -Fq "$SMALL_RUN/packet-addendum.md" "$prompt" \
+    || fail "concretized prompt does not name the packet addendum: $prompt"
+  grep -Fq 'already in your system prompt' "$prompt" \
+    || fail "concretized prompt does not tell reviewers the packet is in their system prompt: $prompt"
+done
+
+# Resuming a run dir that predates the agent files rebuilds them from its packet.md.
+LEGACY_RESUME_RUN="$TMP_ROOT/legacy-resume-run"
+run_launcher "$LEGACY_RESUME_RUN"
+rm -rf "$LEGACY_RESUME_RUN/agents" "$LEGACY_RESUME_RUN/out/orchestrator.exit" \
+  "$LEGACY_RESUME_RUN/out/orchestrator.out"
+(
+  cd "$REPO"
+  CODE_REVIEW_TEST_ARGS_FILE="$LEGACY_RESUME_RUN/runner-args.txt" \
+    bash "$LAUNCHER" --resume --runner "$FAKE_RUNNER" --run-dir "$LEGACY_RESUME_RUN" >/dev/null
+)
+[ -r "$LEGACY_RESUME_RUN/agents/.claude/agents/reviewer.md" ] \
+  || fail "resume did not rebuild missing agent definitions"
+grep -Fq 'small change' "$LEGACY_RESUME_RUN/agents/.claude/agents/reviewer.md" \
+  || fail "rebuilt agent definition does not embed the packet"
 
 # A round that includes `design` declares the Step 3.5 sweep as a late wave up front, and its
 # prompt keeps exactly one runtime placeholder for the orchestrator to fill.

@@ -21,9 +21,11 @@ known-issues list to suppress (may be "none").
 - Never invoke any skill or slash command (including any `/code-review` variant).
 - Never create, edit, or delete files outside `RUN_DIR`. Never stage, commit, or revert.
 - Dispatch subagents ONLY of the provided custom types `reviewer-deep`, `reviewer`, and
-  `verifier`. Budget: at most 13 angle reviewers (large-diff splits and the optional `spec`
-  angle included) plus the one Step 3.5 sweep, at most 10 verifiers, hard total 24. The
-  sweep is deliberately outside the
+  `verifier` — never `general-purpose`, and never the `fork` type (a fork inherits your
+  context, tools, and model, discarding the tier choice, the read-only tool allowlist, and
+  the packet already sitting in the custom types' system prompt). Budget: at most 13 angle
+  reviewers (large-diff splits and the optional `spec` angle included) plus the one Step 3.5
+  sweep, at most 10 verifiers, hard total 24. The sweep is deliberately outside the
   reviewer budget — an adversarial round fills all 12 reviewer slots with its angle list, and
   a sweep that only runs on leftover budget never runs at all.
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
@@ -49,7 +51,11 @@ known-issues list to suppress (may be "none").
 ## Resuming (only when your launch prompt says RESUME)
 
 If your launch prompt marks this as a resume, the files under `RUN_DIR/` are authoritative
-prior work — never redo it. `review-plan.json` is the persisted task list, with its immutable
+prior work — never redo it. If `RUN_DIR/packet-addendum.md` is missing, write it per Step 1
+before dispatching anything (a run from before the addendum existed appended conventions to
+`packet.md` instead; the reviewers still have that packet in their system prompt, so the
+addendum only needs the untracked-file content, or the one-line "nothing applies" text).
+`review-plan.json` is the persisted task list, with its immutable
 `requested_angles`, the later waves this round declared, and each task's `id`, `angle`, and
 `wave`. A task's prompt is always `RUN_DIR/prompts/<task-id>.md` — the plan does not store it.
 A ready plan is immutable apart from appending declared later-wave tasks; a draft plan must be
@@ -77,30 +83,39 @@ refuses to proceed unless every task in `review-plan.json` has a completed recei
 preserves existing candidate numbering and finished batches and prints exactly which
 `verify-input-<n>.json` files still need a verifier.
 
-## Step 1 — Complete the review packet
+## Step 1 — Write the packet addendum
 
-`RUN_DIR/packet.md` already exists — the launcher wrote the target description, the `--stat`
-list, the known-issues list (when present), and the full unified diff (also available raw as
-`RUN_DIR/raw_diff.txt`). Never rebuild any of that; the packet's diff section is authoritative.
-Sanity-check it with one compound Bash call (`wc -l` + `head`), then complete it with what
-requires judgment, batching the file reads each task needs into a single message:
+`RUN_DIR/packet.md` is complete and frozen: the launcher wrote the target description, the
+`--stat` list, the known-issues list (when present), the spec documents (when any), and the
+full unified diff (also raw in `RUN_DIR/raw_diff.txt`), then embedded the whole file verbatim
+in the system prompt of every `reviewer-deep`, `reviewer`, and `verifier` definition. Siblings
+of one type therefore share a single cacheable prompt prefix instead of each reading 30k+
+tokens from disk. Never read the packet yourself (it is not your job to review it), and never
+append to it — anything added there reaches nobody. `RUN_DIR/diff-stat.txt` is the
+changed-file list; read that when you need to know which files and directories the diff
+touches.
+
+What still requires judgment goes to **`RUN_DIR/packet-addendum.md`**, which every reviewer
+and verifier Reads once, batched with its first tool calls. Write it before the first
+dispatch, always — even when nothing applies, it holds the single line
+`No project conventions or untracked files apply to this packet.` so the reviewers' Read
+succeeds. Batch the file reads both parts need into one message, then one Write:
 
 1. **Project conventions**: every place this repo documents how code should be written — the
    root `CLAUDE.md` (if any) and every `CLAUDE.md` in directories the diff touches, plus
    root-level standards documents when they exist (`CONTRIBUTING.md`, `CODING_STANDARDS.md`,
    `CODE_STYLE.md`, a style guide under `docs/` — check cheaply with one `ls`/Glob, do not
-   dredge) — each trimmed to sections that could apply to the diff. Write the excerpts (with
-   a `## Project conventions` heading and per-file paths) to `RUN_DIR/conventions-excerpt.md`,
-   then append with `cat RUN_DIR/conventions-excerpt.md >> RUN_DIR/packet.md`. Skip entirely
-   when no such document applies.
+   dredge) — each trimmed to sections that could apply to the diff, under a
+   `## Project conventions` heading with per-file paths.
 2. **Untracked files** (working-tree and file-list targets only): the diff cannot contain
-   them — append the full content of untracked files from `git status --porcelain` the same
-   way (cap each at ~400 lines, note truncation).
+   them — include the full content of untracked files from `git status --porcelain` under a
+   `## Untracked files` heading (cap each at ~400 lines, note truncation).
 
 ## Step 2 — Dispatch angle reviewers
 
 `RUN_DIR/prompts/<angle>.md` already exists for every angle this round — the launcher
-validated and concretized the templates (packet path, how to read the packet, repo root, known
+validated and concretized the templates (packet path, the note that the packet is already in
+the reviewer's system prompt and that the addendum must be read instead, repo root, known
 issues) at zero token cost, `sweep.md` included. Never read the templates or rewrite these base
 files. A missing base prompt is a corrupt launch artifact: stop rather than inventing one.
 
@@ -108,9 +123,10 @@ files. A missing base prompt is a corrupt launch artifact: stop rather than inve
 this round declared (Step 3.5's sweep, when it applies), and one wave-1 task per requested
 angle. The launcher marks it `ready` for a normal tracked diff and `draft` when the
 diff exceeds the large-diff threshold or the target may gain untracked-file content in Step 1.
-If it is draft, judge the completed packet against the large-diff rule below before the first
-review dispatch: either replace split angles with slice tasks, or keep the base tasks when no
-split is needed, then set `status` to `ready` atomically. Never change `requested_angles` or
+If it is draft, judge the diff (`wc -l RUN_DIR/raw_diff.txt`, per-file sizes in
+`diff-stat.txt`, plus whatever untracked content the addendum added) against the large-diff
+rule below before the first review dispatch: either replace split angles with slice tasks, or
+keep the base tasks when no split is needed, then set `status` to `ready` atomically. Never change `requested_angles` or
 `late_waves`. For every split angle,
 write one complete `prompts/<angle>-<slice#>.md` per slice by copying the base
 prompt and appending the slice file restriction, then atomically replace that angle's base task
@@ -152,8 +168,8 @@ status, not finding count, is the "this task is done" marker a resume relies on.
 fallback must emit and checkpoint the same receipt. Never replace a valid completed receipt
 during resume.
 
-**Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the packet's
-diff section exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
+**Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the diff
+(`raw_diff.txt`) exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
 `removed-behavior`, then `callers`) instead of dispatching them once: group the changed files
 into 2–3 coherent slices (by directory or feature, each slice ≤ ~1,200 diff lines). For each
 slice, create `prompts/<angle>-<slice#>.md` by copying the base prompt and appending:
@@ -211,10 +227,11 @@ otherwise proceed. Nothing else about the prepared files needs your attention �
 rewrite them, and never retype candidate objects into your own context.
 
 Then dispatch one `verifier` subagent (sonnet tier) per `verify-input-<n>.json`. Each
-verifier session re-pays the repo context, so batches are sized to keep the dispatch count
-low; do not split them further. Give each verifier: the path of its batch file (the
-candidate objects carry their `index`), the packet path, and the following instructions
-**verbatim**:
+verifier session re-pays the repo files it opens, so batches are sized to keep the dispatch
+count low; do not split them further. Give each verifier: the path of its batch file (the
+candidate objects carry their `index`), the path of `RUN_DIR/packet-addendum.md` (the packet
+itself is already in the verifier's system prompt — say so, and never tell it to read
+`packet.md`), and the following instructions **verbatim**:
 
 > Investigate each candidate against the actual code and return one verdict per candidate.
 > Judge each candidate independently on its own claim. The verdicts:

@@ -68,11 +68,14 @@ The current session never orchestrates. It resolves the review target, launches 
 orchestrator session, and acts on the consolidated result.
 
 1. **Orchestrate (inside the orchestrator session)**:
-   - completes the review packet — the launcher script already wrote the target, `--stat`
-     list, and full diff into it, and pre-concretized every angle-prompt file (both at zero
-     model-token cost, outside the session); the orchestrator appends relevant `CLAUDE.md`
-     excerpts and untracked-file content. Reviewers read the packet instead of re-exploring
-     the repo N times, under an explicit turn budget (batched tool calls, ~15 calls max);
+   - writes the packet addendum — the launcher script already built the review packet
+     (target, `--stat` list, spec documents, full diff), pre-concretized every angle-prompt
+     file, and embedded the packet verbatim in the system prompt of the reviewer and verifier
+     agent definitions (all at zero model-token cost, outside the session); the orchestrator
+     only adds relevant `CLAUDE.md` excerpts and untracked-file content to a small
+     `packet-addendum.md`. Reviewers thus start with the whole diff in context instead of
+     re-exploring the repo N times, under an explicit turn budget (batched tool calls, ~12
+     calls max);
    - dispatches one read-only reviewer **subagent** per angle — or, when the diff exceeds
      ~1,500 lines, several per high-risk angle, each restricted to a coherent file-group slice —
      choosing the model tier by task complexity (opus = bug-hunting angles, sonnet = cleanup
@@ -109,11 +112,12 @@ orchestrator session, and acts on the consolidated result.
 Built in response to a real incident where a re-entrant review skill recursively spawned 242
 descendant agents:
 
-- Reviewers and verifiers are structurally unable to fan out: they are subagents injected into
-  the orchestrator via `--agents` with tool allowlists containing no `Task`, no `Skill`, and no
-  write tools; the orchestrator itself runs with `Skill` disallowed and inspection-grade Bash
-  only. The in-session agent likewise has no delegation tools and runs with
-  `permissionMode: plan`.
+- Reviewers and verifiers are structurally unable to fan out: they are per-run agent files
+  (`RUN_DIR/agents/.claude/agents/`, loaded into the orchestrator via `--add-dir`) with tool
+  allowlists containing no `Task`, no `Skill`, and no write tools; the orchestrator itself runs
+  with `Skill` disallowed and inspection-grade Bash only, and is told never to request the
+  `fork` subagent type (a fork would inherit its full tool pool). The in-session agent likewise
+  has no delegation tools and runs with `permissionMode: plan`.
 - `CODE_REVIEW_CHILD=1` sentinel: both commands refuse to run when it is set, and the
   orchestrator script refuses to start when it is already set — recursion is blocked at two
   layers.
@@ -137,6 +141,20 @@ max_rounds: 3               # adversarial loop cap; --max-rounds=N overrides
 backlog_dir: docs/code-review-backlog
 ---
 ```
+
+> **Where the tokens go**: the dominant per-round input cost was never the subagents' fixed
+> prefix (system prompt, CLAUDE.md, tools — identical across siblings and already served from
+> the prompt cache) but the packet: 12–24 fresh subagents each `Read` the same 30k-token file,
+> and a tool result sitting behind a per-angle prompt is never shared. The launcher therefore
+> embeds the packet in each agent definition's system prompt, so siblings of one tier share
+> an identical prefix and the first reviewer's cache write serves the rest at cache-read
+> price; it also removes the chunked reads the 25,000-token `Read` cap used to force. Claude
+> Code's `fork` subagents (`/subtask`) get their cheapness from the same identical-prefix
+> property, but were rejected here: a fork runs on the parent's model (no tier split),
+> inherits the parent's full tool pool (no read-only guarantee), forces background dispatch
+> in the headless session, and would hand every verifier the other reviewers' raw findings.
+> Whether the cache pays out depends on the gateway behind `runner` honoring prompt caching;
+> without it the change is still a net turn reduction, never a regression.
 
 > **Cheaper orchestrator**: the orchestrator session itself runs on the runner's default
 > model (often the flagship). Its work is mostly mechanical — appending a `--model` flag to

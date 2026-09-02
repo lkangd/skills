@@ -134,8 +134,10 @@ never fabricate a spec, and never block the review on one.
    re-reviewer keeps the requirements as context.
    The script builds the orchestrator prompt AND the diff packet itself (fails fast on a bad
    diff spec) — never read or fill `references/orchestrator.md` in this session. It also
-   enforces the `CODE_REVIEW_CHILD` sentinel and injects the read-only
-   `reviewer-deep`/`reviewer`/`verifier` subagent definitions.
+   enforces the `CODE_REVIEW_CHILD` sentinel and writes the read-only
+   `reviewer-deep`/`reviewer`/`verifier` agent definitions under `RUN_DIR/agents/`, each with
+   the packet embedded in its system prompt so sibling reviewers share one cached prefix
+   instead of re-reading the packet from disk.
 4. Read the result. The authoritative payload is **`RUN_DIR/out/findings.json`**: an array
    of finding objects (`severity`, `verdict`, `angle`, `title`, `file`, `line`, `evidence`,
    `why`, `suggestion`, `verdict_evidence`), already verified (verdict `CONFIRMED` or
@@ -200,16 +202,21 @@ substitutions:
   diff, opening with the same intended-behavior note the launcher writes — required
   behavior is intended, only its uncovered consequences are findings; omit the section when
   there is no spec), and the full
-  `git diff <args>` output, using the same `--diff-args` mapping as §3 — then continue with
-  orchestrator.md Step 1's completion tasks (conventions, untracked files). Likewise
+  `git diff <args>` output, using the same `--diff-args` mapping as §3. Then gather what
+  orchestrator.md Step 1 puts in the addendum (conventions, untracked files) and **append it
+  to `packet.md` instead** — in-session there is no addendum file: the `code-review:reviewer`
+  agent is a static plugin definition with no packet in its system prompt, so reviewers read
+  the packet from disk and everything must be inside that one file. Likewise
   concretize `RUN_DIR/prompts/<angle>.md` from the templates yourself (orchestrator.md
   Step 2 assumes the launcher did it; in-session there is none) — substituting every `{{…}}`
   placeholder, including `{{RECEIPT_CONTRACT}}` (verbatim contents of
   `PLUGIN_ROOT/references/receipt-contract.md` — the output contract `findings.sh` parses, so
   a prompt that keeps the literal placeholder produces checkpoints nothing can read) and
-  `{{PACKET_NOTE}}`: measure the packet and tell reviewers whether it fits in one `Read`
-  (the tool rejects anything over 25,000 tokens) or must be read in chunks, and at what
-  chunk size. `sweep.md`'s `{{VERIFIED_FINDINGS}}` is the one placeholder filled later.
+  `{{PACKET_NOTE}}`: state that the packet must be read from that path FIRST and that it
+  already includes the project conventions and untracked files (no addendum), then measure
+  it and say whether it fits in one `Read` (the tool rejects anything over 25,000 tokens) or
+  must be read in sequential chunks, and at what chunk size. `sweep.md`'s
+  `{{VERIFIED_FINDINGS}}` is the one placeholder filled later.
 - Create `RUN_DIR/review-plan.json` alongside the prompts with top-level `version: 2`,
   `status: "ready"`, immutable `requested_angles` containing the unsliced angle list,
   `late_waves` (`[{"wave":2,"angles":["sweep"]}]` when the round includes `design`, else `[]`),
@@ -222,7 +229,17 @@ substitutions:
   `prepare` before verification and `build` before reporting instead of doing that bookkeeping
   by hand.
 - Dispatch angle reviewers and verifiers via the `Agent` tool with
-  `subagent_type: "code-review:reviewer"` and `run_in_background: false`.
+  `subagent_type: "code-review:reviewer"` — never the `fork` type: a fork inherits this
+  whole conversation and the session model, discarding the tier choice, the agent's
+  read-only definition, and the verifiers' independence. Give each dispatch the packet path
+  (verifiers too) — the in-session agent has nothing in its system prompt.
+- Interactive sessions on Claude Code v2.1.232+ run in fork mode by default: every subagent
+  runs in the background and the `Agent` tool has no `run_in_background` parameter, so
+  orchestrator.md's "dispatch synchronously" rule (written for the headless runner) does not
+  apply. Issue a whole wave in one message, end your turn, and continue when the harness
+  delivers the completion notifications — never poll or busy-wait. Checkpoint each result
+  as orchestrator.md requires when the notifications arrive (there is no transcript
+  harvester in-session, so those Writes are the only checkpoints).
 - Choose the model per dispatch with the `model` parameter using tier aliases
   (opus = complex angles, sonnet = moderate angles and verifiers), matching the tier
   guidance in orchestrator.md. Aliases resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping
