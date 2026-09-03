@@ -11,9 +11,10 @@ Clean local development resources for branch `$ARGUMENTS` after the feature has 
 
 1. Inspect the sibling `$ARGUMENTS.code-workspace` file.
 2. Clean every workspace folder whose path belongs to the target branch.
-3. Remove each matching git worktree.
-4. Delete the local branch in each related repository.
-5. Delete the workspace file after all related worktrees and local branches are cleaned.
+3. Close the cmux workspace named `$ARGUMENTS` once the preflight checks pass, before anything is removed.
+4. Remove each matching git worktree.
+5. Delete the local branch in each related repository.
+6. Delete the workspace file after all related worktrees and local branches are cleaned.
 
 ## Execute
 
@@ -28,3 +29,4 @@ Reply concisely in Chinese:
 1. If the script prints `STATUS: CLEANED`, summarize the result table.
 2. If the script prints `STATUS: CONFIRMATION_REQUIRED`, do not run more commands. Explain why automatic deletion stopped and ask the user to confirm before using `--force`.
 3. If the script prints `STATUS: ERROR`, explain the failed check and the exact next action.
+4. If the script prints any `WARN:` line, such as cmux not running, report it as well.

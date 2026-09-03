@@ -72,12 +72,14 @@ The command reads the sibling workspace file:
 For every workspace folder whose `path` or `name` ends with the branch name, it:
 
 1. Checks the matching worktree path exists and is a linked git worktree.
-2. Checks the worktree is on the expected branch.
+2. Checks the worktree is on the expected branch, and switches it back automatically when another branch, such as a leftover `temp-<sha>-<f branch>-<env branch>` branch from a ship-to-test run, is checked out.
 3. Checks there are no uncommitted or untracked files.
 4. Fetches refs and checks the local branch is merged into the default remote branch, such as `origin/main`.
-5. Removes the worktree.
-6. Deletes the local branch in that repository.
+5. Removes the worktree, and deletes the directory itself if it survives the removal, which happens when an editor, a dev server, or Finder recreates something inside it.
+6. Deletes the local branch in that repository, after running `git worktree prune` when the worktree directory was already gone, because the stale record left behind by a directory deleted by hand makes git refuse to delete the branch.
 7. Deletes the `.code-workspace` file after all related targets are cleaned.
+
+Steps 1 to 4 run for every folder first. Once they all pass, and before anything is removed, the command closes the cmux workspace named after the branch, which is the reverse of what `/my-workflows:create-dev-worktree` sets up. That also releases the panes whose working directory is inside the worktrees. This step never blocks the cleanup: if the `cmux` CLI is missing, cmux is not running, no workspace carries that name, or `cmux close-workspace` fails, the command prints a `WARN:` line and keeps going.
 
 If the workspace contains multiple folders, all matching folders are cleaned together. For example, this workspace causes both the `bff` and `fe` worktrees and local branches to be cleaned:
 
@@ -118,8 +120,10 @@ The command stops with `STATUS: ERROR` and does not delete anything for protecte
 
 - The target path is not a git worktree.
 - The target is a main repository rather than a linked git worktree.
-- The target worktree is checked out on a different branch.
+- The target worktree is checked out on a different branch and cannot be switched back, because the local branch is gone, is already used by another worktree, or the switch would overwrite local changes.
 - The current shell is inside the target worktree.
+
+It also reports `STATUS: ERROR` and keeps the `.code-workspace` file when a deletion itself fails, for example when a leftover worktree directory cannot be removed because a file inside it is not writable.
 
 ### `/my-workflows:ship-to-test [审核人]`
 

@@ -86,6 +86,19 @@ default_merge_ref() {
   return 1
 }
 
+# git worktree remove deletes the directory itself, so a surviving path means
+# something recreated it in the meantime, such as an editor, a dev server
+# running in that folder, or Finder writing .DS_Store.
+remove_leftover_dir() {
+  local path="$1"
+  if [[ "${path}" != /*/* ]]; then
+    echo "unexpected leftover path"
+    return 1
+  fi
+  rm -rf "${path}" 2>&1 || true
+  [[ ! -e "${path}" ]]
+}
+
 parse_args
 
 if [[ ! "${BRANCH_NAME}" =~ ^dev-(f|bg)-[0-9]{8}-[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
@@ -232,8 +245,17 @@ for line in "${TARGET_LINES[@]}"; do
 
       current_branch="$(git -C "${target_path}" branch --show-current 2>/dev/null || true)"
       if [[ "${current_branch}" != "${BRANCH_NAME}" ]]; then
-        notes="$(append_note "${notes}" "checked-out branch is ${current_branch:-detached}, expected ${BRANCH_NAME}")"
-        row_protected=1
+        if (( row_protected )); then
+          notes="$(append_note "${notes}" "checked-out branch is ${current_branch:-detached}, expected ${BRANCH_NAME}")"
+        elif ! git --git-dir="${common_dir}" show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+          notes="$(append_note "${notes}" "checked-out branch is ${current_branch:-detached} and local branch ${BRANCH_NAME} no longer exists")"
+          row_protected=1
+        elif checkout_output="$(git -C "${target_path}" checkout "${BRANCH_NAME}" 2>&1)"; then
+          notes="$(append_note "${notes}" "switched from ${current_branch:-detached HEAD} back to ${BRANCH_NAME}")"
+        else
+          notes="$(append_note "${notes}" "cannot switch from ${current_branch:-detached HEAD} to ${BRANCH_NAME}: ${checkout_output}")"
+          row_protected=1
+        fi
       fi
 
       dirty_output="$(git -C "${target_path}" status --porcelain --untracked-files=all)"
@@ -334,6 +356,13 @@ if (( unsafe_count > 0 && FORCE == 1 )); then
   echo
 fi
 
+# Close the cmux workspace before removing the worktrees, so its panes stop
+# holding a cwd inside them. Cleanup continues even when this step cannot run.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "Closing cmux workspace..."
+python3 "${SCRIPT_DIR}/close-cmux-dev-workspace.py" --name "${BRANCH_NAME}" || true
+echo
+
 RESULT_WORKTREE=()
 RESULT_BRANCH=()
 RESULT_NOTES=()
@@ -361,6 +390,15 @@ for index in "${!TARGET_NAMES[@]}"; do
 
       if git --git-dir="${common_dir}" "${remove_args[@]}" >/dev/null 2>&1; then
         worktree_result="removed"
+        if [[ -e "${target_path}" ]]; then
+          if leftover_output="$(remove_leftover_dir "${target_path}")"; then
+            result_notes="$(append_note "${result_notes}" "deleted leftover worktree directory")"
+          else
+            worktree_result="failed"
+            result_notes="$(append_note "${result_notes}" "leftover worktree directory could not be deleted: ${leftover_output:-${target_path}}")"
+            delete_failed=1
+          fi
+        fi
       else
         worktree_result="failed"
         result_notes="$(append_note "${result_notes}" "git worktree remove failed")"
@@ -369,6 +407,16 @@ for index in "${!TARGET_NAMES[@]}"; do
     fi
 
     if [[ "${TARGET_BRANCH_EXISTS[$index]}" == "1" ]]; then
+      # A worktree directory deleted by hand keeps its administrative record,
+      # and git refuses to delete a branch that record still claims.
+      if [[ "${TARGET_WORKTREE_EXISTS[$index]}" == "0" ]]; then
+        if git --git-dir="${common_dir}" worktree prune >/dev/null 2>&1; then
+          result_notes="$(append_note "${result_notes}" "pruned stale worktree records")"
+        else
+          result_notes="$(append_note "${result_notes}" "git worktree prune failed")"
+        fi
+      fi
+
       if git --git-dir="${common_dir}" branch -D "${BRANCH_NAME}" >/dev/null 2>&1; then
         branch_result="deleted"
       else
