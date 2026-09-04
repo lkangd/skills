@@ -31,7 +31,11 @@ waiting to surface. Only values from answers (or the existing config on re-run) 
      accepts `-p`, `--allowedTools`, `--disallowedTools`, `--max-turns`.
    - `In-session subagents` → `runner: in-session`. No extra processes; reviewers run as
      read-only subagents in this session.
-2. **Concurrency** — max reviewers at once: `Unlimited (default)` → `0`, or `2`, or `1`.
+2. **Concurrency** — max reviewers at once: `Unlimited` → `0`, `4`, `2`, or `1`. Mark
+   `Unlimited` as the default when the runner is bare `claude`, and `4` as the default when it
+   is a custom command template (a third-party gateway): observed rounds on such gateways
+   turned 8 parallel reviewers into 429/500 retries and re-dispatches that cost more wall time
+   than the parallelism saved.
 3. **Adversarial max rounds** — `3 (default)`, `2`, or `5`.
 4. **Backlog directory** — where deferred findings are filed (tracked in git):
    `docs/code-review-backlog (default)` or a custom path.
@@ -53,6 +57,15 @@ Configuration for the code-review plugin. Edit values above or re-run /code-revi
 
 ## Housekeeping
 
+- **Tier check for ccsp presets**: when the runner is `ccsp -g <preset> …`, Read
+  `~/.ccsp/settings/<preset>.json` (skip silently if absent) and compare its
+  `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+  values (top level or under `env`). If two or more are the same model — or any is unset while
+  the others are set — tell the user in one line that reviewer tiers collapse onto one model
+  for this preset (the plugin's opus/sonnet split then saves nothing) and which preset key to
+  edit. Do not change the preset. Also mention, when the mapped models are GPT-family, that
+  those gateways have shown 2–10% prompt-cache hit rates in this plugin, so `concurrency: 4`
+  and narrower targets matter more there.
 - Review runs write packets under `.code-review/runs/` (repo root, deliberately outside
   `.claude/` whose tree rejects headless writes). Check `.gitignore`; if it does not cover that
   path, ask the user whether to append `.code-review/` to `.gitignore`, and do so if confirmed.

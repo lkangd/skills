@@ -19,15 +19,17 @@ mkdir -p "$RUN_DIR/out" "$RUN_DIR/prompts" "$(dirname "$TRANSCRIPT")"
 RUN_DIR="$(cd "$RUN_DIR" && pwd -P)"
 : > "$RUN_DIR/prompts/correctness.md"
 : > "$RUN_DIR/prompts/reuse.md"
+: > "$RUN_DIR/prompts/callers.md"
 printf '%s\n' '[{"index":1}]' > "$RUN_DIR/out/verify-input-1.json"
 jq -n '{
   version: 2,
   status: "ready",
-  requested_angles: ["correctness", "reuse"],
+  requested_angles: ["correctness", "reuse", "callers"],
   late_waves: [],
   tasks: [
     {id: "correctness", angle: "correctness", wave: 1},
-    {id: "reuse", angle: "reuse", wave: 1}
+    {id: "reuse", angle: "reuse", wave: 1},
+    {id: "callers", angle: "callers", wave: 1}
   ]
 }' > "$RUN_DIR/review-plan.json"
 printf '%s\n' '{"status":"completed","findings":[1]}' \
@@ -50,6 +52,11 @@ jq -cn --arg prompt "Read and execute the instructions in $RUN_DIR/prompts/reuse
   message: {content: [{type: "tool_use", id: "call-failed", name: "Agent",
                        input: {description: "review reuse", prompt: $prompt}}]}
 }' >> "$TRANSCRIPT"
+jq -cn --arg prompt "Read and execute the instructions in $RUN_DIR/prompts/callers.md." '{
+  type: "assistant",
+  message: {content: [{type: "tool_use", id: "call-async", name: "Agent",
+                       input: {description: "review callers", prompt: $prompt}}]}
+}' >> "$TRANSCRIPT"
 
 sleep 2 &
 PARENT_PID=$!
@@ -66,9 +73,10 @@ jq -cn --arg text '```json
   message: {content: [{type: "tool_result", tool_use_id: "call-review",
                        content: [{type: "text", text: $text}]}]}
 }' >> "$TRANSCRIPT"
-jq -cn --arg text '```json
+# Unfenced on purpose: some gateway models return the bare array.
+jq -cn --arg text '
 [{"index":1,"verdict":"CONFIRMED","evidence":"verified"}]
-```' '{
+' '{
   type: "user",
   message: {content: [{type: "tool_result", tool_use_id: "call-verifier",
                        content: [{type: "text", text: $text}]}]}
@@ -78,13 +86,37 @@ jq -cn '{
   message: {content: [{type: "tool_result", tool_use_id: "call-failed",
                        content: "Agent terminated early due to an API error"}]}
 }' >> "$TRANSCRIPT"
+# A backgrounded dispatch: the tool_result carries no receipt, the later notification does.
+jq -cn '{
+  type: "user",
+  message: {content: [{type: "tool_result", tool_use_id: "call-async",
+                       content: [{type: "text",
+                                  text: "{\"status\":\"async_launched\",\"agentId\":\"abc\"}"}]}]}
+}' >> "$TRANSCRIPT"
+jq -cn --arg text '<task-notification>
+<task-id>abc</task-id>
+<tool-use-id>call-async</tool-use-id>
+<status>completed</status>
+<summary>Agent "review callers" completed</summary>
+<result>Done. Receipt:
+```json
+{"status":"completed","findings":[{"severity":"minor","title":"x","file":"a.js","line":1,"evidence":"e","why":"w","suggestion":"s"}]}
+```
+</result>
+<usage>total_tokens: 1</usage>
+</task-notification>' '{
+  type: "user",
+  message: {role: "user", content: $text}
+}' >> "$TRANSCRIPT"
 
 attempt=0
 while [ "$attempt" -lt 30 ]; do
   if jq -e '.status == "completed" and .findings == []' \
       "$RUN_DIR/out/candidates-correctness.json" >/dev/null 2>&1 \
     && jq -e 'length == 1 and .[0].index == 1 and .[0].verdict == "CONFIRMED"' \
-      "$RUN_DIR/out/verdicts-1.json" >/dev/null 2>&1; then
+      "$RUN_DIR/out/verdicts-1.json" >/dev/null 2>&1 \
+    && jq -e '.status == "completed" and (.findings | length) == 1' \
+      "$RUN_DIR/out/candidates-callers.json" >/dev/null 2>&1; then
     break
   fi
   sleep 0.1
@@ -102,5 +134,8 @@ jq -e 'length == 1 and .[0].index == 1 and .[0].verdict == "CONFIRMED"' \
   || fail "completed verifier result was not checkpointed"
 [ ! -e "$RUN_DIR/out/candidates-reuse.json" ] \
   || fail "failed reviewer result was checkpointed"
+jq -e '.status == "completed" and (.findings | length) == 1 and .findings[0].title == "x"' \
+  "$RUN_DIR/out/candidates-callers.json" >/dev/null \
+  || fail "backgrounded reviewer result delivered via task-notification was not checkpointed"
 
 printf 'ok - transcript harvester checkpoints completed agents independently\n'

@@ -15,12 +15,15 @@
 #          IDs that do not yet have a valid completed receipt. An empty findings array still
 #          completes a task.
 #
-#        findings.sh prepare --run-dir DIR [--batch-size N] [--drop 3,7]
+#        findings.sh prepare --run-dir DIR [--batch-size N] [--drop 3,7] [--verify-all]
 #          Validate that every planned review task has a completed receipt, collect the
 #          findings, normalize each `file` against the packet's changed-file list, number the
-#          candidates, and write out/normalized-candidates.json plus out/verify-input-<n>.json
-#          batches. Prints a compact summary and, when candidates cluster on nearby lines of
-#          one file, a duplicate report to act on with --drop.
+#          candidates, merge literal repeats (same file, line, title), and write
+#          out/normalized-candidates.json plus out/verify-input-<n>.json batches. Candidates
+#          from cleanup angles (reuse, simplification, efficiency, altitude, cleanup) are not
+#          batched: they pass through to the report marked unverified, unless --verify-all.
+#          Prints a compact summary and, when candidates cluster on nearby lines of one file,
+#          a duplicate report to act on with --drop.
 #
 #          Re-running is safe and incremental: candidates already numbered keep their index,
 #          batches whose verdicts-<n>.json already exists are left alone, and only unverified
@@ -30,8 +33,10 @@
 #
 #        findings.sh build --run-dir DIR
 #          Join out/verdicts-*.json onto the normalized candidates, drop REFUTED and
-#          unverified ones, order the survivors, and write out/findings.json. Prints the
-#          numbers the orchestrator's stats line needs.
+#          unverified ones, append the cleanup pass-throughs (verdict PLAUSIBLE, `unverified`
+#          true), mark findings whose file changed since launch (`stale` true), order the
+#          survivors, and write out/findings.json. Prints the numbers the orchestrator's stats
+#          line needs.
 #
 # Exit codes: 0 ok (including a round where nothing was found), 1 usage/IO error, 2 a
 # pipeline step was skipped (build before any verdicts exist).
@@ -65,6 +70,37 @@ def isbug:
   . as $a
   | ["correctness","removed-behavior","callers","pitfalls","wrapper","design","spec","re-review","sweep"]
   | index($a) != null;
+
+# Cleanup angles report a maintenance cost, not a defect, and a verifier can rarely refute a
+# cost claim from the code (observed: 7% REFUTED across 458 cleanup candidates, against half of
+# all verifier time and tokens). Their candidates skip verification by default and reach the
+# report marked as unverified; `prepare --verify-all` restores the old behaviour. conventions
+# is deliberately not here: a quoted rule is checkable, and verifiers do catch misquotes.
+def iscleanup:
+  . as $a
+  | ["reuse","simplification","efficiency","altitude","cleanup"]
+  | index($a) != null;
+
+# Two candidates are the same report when they name the same file, the same line and the same
+# title up to case/punctuation. Different angles seeing the same defect word it differently,
+# so this only catches the literal repeats — the judgement call stays with --drop. Letters and
+# digits of every script are kept: reviews are often written in Chinese, and an ASCII-only
+# class would fold every such title to "" and merge distinct findings.
+def dupkey:
+  [ ((.file // "") | tostring), lineof,
+    ((.title // "") | tostring | ascii_downcase | gsub("[^\\p{L}\\p{N}]+"; "")) ] | tojson;
+
+# Identity used to carry an index across prepare runs. Two receipts from one angle can repeat
+# a finding verbatim, so the key carries an occurrence ordinal: the n-th identical candidate
+# maps to the n-th index handed out for that key, never to the same index twice.
+def idkey: [(.angle // null), (.file // null), lineof, (.title // null)] | tojson;
+def with_occurrence:
+  reduce .[] as $c ({seen: {}, out: []};
+    ($c | idkey) as $k
+    | (.seen[$k] // 0) as $n
+    | .seen[$k] = $n + 1
+    | .out += [$c + {__key: ($k + "#" + ($n | tostring))}])
+  | .out;
 
 # Most severe first, bug-hunting angles ahead of cleanup at equal severity, then file/line.
 def orderkey:
@@ -410,7 +446,9 @@ EOF
       | .file = (
           (.file // null) as $v
           | if ($v | type) != "string" or $v == "" then $v
-            else ($v | sub("^[ \t\r\n]+"; "") | sub("[ \t\r\n]+$"; "") | sub("^[./]+"; "")) as $c
+            # Only a literal "./" prefix is stripped: "^[./]+" also ate the dot of a dotfile
+            # directory (".claude/x" became "claude/x") and the root of absolute paths.
+            else ($v | sub("^[ \t\r\n]+"; "") | sub("[ \t\r\n]+$"; "") | sub("^(\\./)+"; "")) as $c
                  | ([ $known[] | . as $k
                       | select($c == $k or ($c | endswith("/" + $k))
                                or ($k | endswith("/" + $c))) ] | first) // $c
@@ -462,10 +500,10 @@ cmd_prepare() {
   local previous='[]'
   if [ -f "$normalized_file" ]; then
     previous="$(jq -c "$JQ_LIB"'
-      [ .[] | select(type == "object" and has("index"))
-        | {key: ([(.angle // null), (.file // null), lineof, (.title // null)] | tojson),
-           index: (.index | tonumber | trunc),
-           merged: (.merged_duplicate == true)} ]' "$normalized_file")" \
+      [ .[] | select(type == "object" and has("index")) ]
+      | sort_by(.index) | with_occurrence
+      | map({key: .__key, index: (.index | tonumber | trunc),
+             manual: (.merged_duplicate == true and .merged_by != "auto")})' "$normalized_file")" \
       || die "cannot parse $normalized_file"
   fi
 
@@ -487,32 +525,65 @@ cmd_prepare() {
   local result; result="$(jq -n "$JQ_LIB"'
     ($candidates) as $raw
     | ($previous | map({(.key): .}) | add // {}) as $prev_by_key
-    | ($previous | map(select(.merged) | .index)) as $prev_dropped
+    # Only --drop decisions carry over; automatic merges are recomputed every run (they are a
+    # function of the candidates plus the manual drops, and a manual drop must be able to
+    # promote the other member of a literal-repeat group).
+    | ($previous | map(select(.manual) | .index)) as $prev_dropped
     | (($previous | map(.index) | max) // 0) as $maxidx
 
     # Number: an index already handed out is preserved — a verdicts file collected in an
     # earlier wave refers to it, so renumbering would rebind verdicts to the wrong candidate.
     | [ $raw | to_entries[] | .value + {__pos: .key} ]
     | sort_by(orderkey + [.__pos])
+    | with_occurrence
     | reduce .[] as $c ({next: ($maxidx + 1), out: []};
-        ([($c.angle // null), ($c.file // null), ($c | lineof), ($c.title // null)] | tojson) as $k
-        | ($prev_by_key[$k].index) as $known
+        ($prev_by_key[$c.__key].index) as $known
         | if $known == null
           then .out += [$c + {index: .next}] | .next += 1
           else .out += [$c + {index: $known}] end)
     | .out
+    | map(del(.__key))
     | sort_by(.index)
+
+    # Literal repeats (same file, line and title) are merged mechanically. A manually dropped
+    # member never wins (it would take the whole group down with it); among the rest, one that
+    # already holds a verdict survives (never throw away collected verification), else the
+    # first by report order. Anything less literal than a literal repeat is the orchestrator s
+    # call via --drop.
+    | (($dropped + $prev_dropped) | unique) as $manual_dropped
+    | ([ group_ordered(dupkey)[] | .items
+         | sort_by(. as $c
+                   | [ (if ($manual_dropped | index($c.index)) != null then 1 else 0 end),
+                       (if ($verified | index($c.index)) != null then 0 else 1 end) ]
+                     + ($c | orderkey) + [$c.index])
+         | .[1:][] | .index ]) as $auto_dropped
 
     # A --drop decision is recorded in the file, not just applied once: later prepare runs
     # (sweep, resume) must not resurrect a candidate already merged into another.
-    | (($dropped + $prev_dropped) | unique) as $dropped_all
-    | map(. as $c | if ($dropped_all | index($c.index)) != null
-                    then . + {merged_duplicate: true} else . end)
+    | (($manual_dropped + $auto_dropped) | unique) as $dropped_all
+    | map(. as $c
+          | if ($manual_dropped | index($c.index)) != null
+            then . + {merged_duplicate: true, merged_by: "manual"}
+            elif ($auto_dropped | index($c.index)) != null
+            then . + {merged_duplicate: true, merged_by: "auto"}
+            else del(.merged_duplicate, .merged_by) end)
     | map(del(.__pos))
+
+    # Live, unverified candidates split into the ones a verifier will judge and the cleanup
+    # ones that pass through unverified (see iscleanup). The flag is recomputed on every run
+    # so --verify-all can still pull a previously skipped candidate into a batch.
+    | map(. as $c
+          | if (($verified | index($c.index)) == null)
+               and (($dropped_all | index($c.index)) == null)
+               and ($verify_all | not) and (($c.angle // "") | iscleanup)
+            then . + {unverified_by_policy: true}
+            else del(.unverified_by_policy) end)
     | . as $all
 
     | [ $all[] | . as $c | select((($verified | index($c.index)) == null)
-                                  and (($dropped_all | index($c.index)) == null)) ] as $pending
+                                  and (($dropped_all | index($c.index)) == null)) ] as $live_unverified
+    | [ $live_unverified[] | select(.unverified_by_policy == true) ] as $passthrough
+    | [ $live_unverified[] | select(.unverified_by_policy != true) ] as $pending
 
     # Keep one file s candidates together where possible: each verifier session re-pays the
     # repo context, so few big batches beat many small ones, and one verifier judging all of
@@ -544,10 +615,12 @@ cmd_prepare() {
        batches: $numbered,
        raw: ($all | length),
        dropped: ($dropped_all | length),
+       auto_dropped: ($auto_dropped | length),
        already_verified: (([$all[].index] - ([$all[].index] - $verified)) | length),
        to_verify: ($pending | length),
-       show_dups: (($dropped_all | length) == 0),
-       clusters: [ $pending | group_ordered(.file) | sort_by(.key)[]
+       passthrough: ($passthrough | length),
+       show_dups: (($manual_dropped | length) == 0),
+       clusters: [ $live_unverified | group_ordered(.file) | sort_by(.key)[]
                    | .key as $path
                    | (.items | sort_by([lineof, .index]))
                    | reduce .[] as $c ({runs: [], cur: []};
@@ -563,6 +636,7 @@ cmd_prepare() {
       --argjson dropped "$DROP_JSON" \
       --argjson verified "$verified" \
       --argjson taken "$taken" \
+      --argjson verify_all "$VERIFY_ALL_JSON" \
       --argjson batchsize "$BATCH_SIZE")" || die "candidate preparation failed"
 
   printf '%s' "$result" | jq --indent 1 '.normalized' > "$normalized_file" \
@@ -578,10 +652,19 @@ cmd_prepare() {
   done
 
   printf '%s' "$result" | jq -r '
-    "raw=\(.raw) dropped=\(.dropped) already_verified=\(.already_verified) to_verify=\(.to_verify)",
+    ("raw=\(.raw) dropped=\(.dropped) already_verified=\(.already_verified) to_verify=\(.to_verify)"
+     + (if .passthrough > 0 then " passthrough=\(.passthrough)" else "" end)),
+    (if .auto_dropped > 0
+     then "\(.auto_dropped) literal repeat(s) (same file, line and title) merged automatically"
+     else empty end),
+    (if .passthrough > 0
+     then "\(.passthrough) cleanup-angle candidate(s) skip verification and reach the report marked unverified (use --verify-all to verify them too)"
+     else empty end),
     ("dispatch a verifier for: " +
       (if (.batches | length) > 0
        then ([.batches[] | "out/verify-input-\(.n).json"] | join(", "))
+       elif .to_verify == 0 and .passthrough > 0 and .already_verified == 0
+       then "nothing — every candidate is a cleanup pass-through; go straight to Step 4"
        else "nothing — every candidate already has a verdict" end)),
     (if .show_dups and ((.clusters | length) > 0)
      then ("possible duplicates (same file, within 5 lines) — if any pair is the SAME " +
@@ -597,8 +680,87 @@ cmd_prepare() {
 
 fingerprint_candidates() {
   jq -Sc "$JQ_LIB"'
-    map(del(.index, .merged_duplicate))
+    map(del(.index, .merged_duplicate, .merged_by, .unverified_by_policy))
     | sort_by([(.angle // ""), (.file // ""), lineof, (.title // "")])' "$@"
+}
+
+# Per-file checksums of a unified diff: "<path>\t<cksum>" per `diff --git` section, keyed by
+# the new-side (b/) path — the spelling findings and the --stat list use, so a renamed file
+# still matches. Quoted (escaped) paths are rare enough to ignore.
+diff_section_sums() { # diff-file scratch-dir
+  local n path
+  mkdir -p "$2" || return 1
+  : > "$2/index"
+  awk -v dir="$2" '
+    /^diff --git / {
+      n++; out = dir "/" n
+      path = $0; sub(/^diff --git a\/.* b\//, "", path)
+      print n "\t" path > (dir "/index")
+    }
+    n > 0 { print > out }
+  ' "$1"
+  while IFS=$'\t' read -r n path; do
+    [ -n "$n" ] || continue
+    printf '%s\t%s\n' "$path" "$(cksum < "$2/$n" | cut -d' ' -f1)"
+  done < "$2/index"
+}
+
+# Files whose diff differs from the one the reviewers saw. A review round takes 15–45 minutes
+# and working-tree targets keep being edited underneath it (observed: 2 findings in one round
+# void by report time). Prints repo-relative paths; silent when the check cannot run (no diff
+# spec persisted, no git, committed range unchanged).
+stale_files() {
+  local diff_args repo scratch path sum
+  [ -r "$RUN_DIR/launch-params.json" ] && [ -r "$RUN_DIR/raw_diff.txt" ] || return 0
+  diff_args="$(jq -r '.diff_args // ""' "$RUN_DIR/launch-params.json" 2>/dev/null)" || return 0
+  [ -n "$diff_args" ] || return 0
+  command -v git >/dev/null 2>&1 || return 0
+  repo="$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/code-review-stale.XXXXXX")" || return 0
+  # shellcheck disable=SC2086
+  if ! git -C "$repo" diff $diff_args > "$scratch/current" 2>/dev/null; then
+    rm -rf "$scratch"; return 0
+  fi
+  {
+    if ! cmp -s "$scratch/current" "$RUN_DIR/raw_diff.txt"; then
+      diff_section_sums "$RUN_DIR/raw_diff.txt" "$scratch/a" > "$scratch/sums-a"
+      diff_section_sums "$scratch/current" "$scratch/b" > "$scratch/sums-b"
+      # A "path\tsum" line present in exactly one of the two lists is a section that changed,
+      # appeared or vanished.
+      sort "$scratch/sums-a" "$scratch/sums-b" | uniq -u | cut -f1
+    fi
+    # Untracked files of a working-tree target are in neither diff; the launcher recorded
+    # their checksums at launch. A file edited or deleted since is stale.
+    if [ -r "$RUN_DIR/untracked-sums.txt" ]; then
+      while IFS=$'\t' read -r path sum; do
+        [ -n "$path" ] || continue
+        if [ ! -f "$repo/$path" ] || [ "$(cksum < "$repo/$path" | cut -d' ' -f1)" != "$sum" ]; then
+          printf '%s\n' "$path"
+        fi
+      done < "$RUN_DIR/untracked-sums.txt"
+    fi
+  } | sort -u
+  rm -rf "$scratch"
+  return 0
+}
+
+# Every verdicts-<n>.json should rule on exactly the indices of verify-input-<n>.json. A
+# mismatch is not fatal — the join is by index, so the verdicts still land on the right
+# candidates — but it means a verifier wandered, and a batch it skipped shows up as unverified.
+warn_verdict_batches() {
+  local f n mismatch
+  for f in "$OUTDIR"/verdicts-*.json; do
+    [ -e "$f" ] || continue
+    n="$(basename "$f")"; n="${n#verdicts-}"; n="${n%.json}"
+    [ -r "$OUTDIR/verify-input-$n.json" ] || continue
+    mismatch="$(jq -n --slurpfile v "$f" --slurpfile i "$OUTDIR/verify-input-$n.json" '
+      ($v[0] | if type == "array" then [ .[] | select(type == "object" and has("index")) | .index | tonumber | trunc ] else [] end | sort) as $ruled
+      | ($i[0] | if type == "array" then [ .[] | select(type == "object" and has("index")) | .index | tonumber | trunc ] else [] end | sort) as $asked
+      | if $ruled == $asked then empty
+        else "expected \($asked | map(tostring) | join(",")); got \($ruled | map(tostring) | join(","))" end' 2>/dev/null)" || continue
+    [ -z "$mismatch" ] || echo "warning: verdicts-$n.json does not match verify-input-$n.json ($mismatch)" >&2
+  done
+  return 0
 }
 
 cmd_build() {
@@ -627,9 +789,16 @@ cmd_build() {
     return 0
   fi
 
-  local f found=0
+  # Verdicts are required only when prepare scheduled something to verify: a round whose every
+  # live candidate is a cleanup pass-through legitimately has none.
+  local f found=0 needs_verdicts
   for f in "$OUTDIR"/verdicts-*.json; do [ -e "$f" ] && found=1 && break; done
-  [ "$found" = "1" ] || die "no out/verdicts-*.json — verification has not run" 2
+  needs_verdicts="$(jq -r "$JQ_LIB"'
+    any(.[]; type == "object" and .merged_duplicate != true and .unverified_by_policy != true)' \
+    "$normalized_file")" || die "cannot read $normalized_file"
+  [ "$found" = "1" ] || [ "$needs_verdicts" = "false" ] \
+    || die "no out/verdicts-*.json — verification has not run" 2
+  warn_verdict_batches
 
   local verdicts
   verdicts="$({ for f in "$OUTDIR"/verdicts-*.json; do
@@ -639,41 +808,66 @@ cmd_build() {
                     || die "cannot parse $f"
                 done; } | jq -s 'add // [] | map({(.index | tonumber | trunc | tostring): .}) | add // {}')"
 
+  local stale_json
+  stale_json="$(stale_files | jq -R . | jq -sc .)" || stale_json='[]'
+
   local result; result="$(jq -n "$JQ_LIB"'
     ($candidates | map(select(type == "object" and has("index")))) as $all
     | [ $all[] | select(.merged_duplicate != true) ] as $live
     | (($all | length) - ($live | length)) as $merged
-    | [ $live[] | select($verdicts[(.index | tostring)] == null) ] as $unverified
+    | [ $live[] | select($verdicts[(.index | tostring)] == null and .unverified_by_policy != true) ] as $unverified
+    | [ $live[] | select($verdicts[(.index | tostring)] == null and .unverified_by_policy == true) ] as $passthrough
     | [ $live[] | select($verdicts[(.index | tostring)].verdict == "REFUTED") ] as $refuted
-    | [ $live[] | . as $c | $verdicts[(.index | tostring)] as $v
-        | select($v != null and $v.verdict != "REFUTED")
-        | {severity: $c.severity, verdict: $v.verdict, angle: $c.angle, title: $c.title,
-           file: $c.file, line: $c.line, evidence: $c.evidence, why: $c.why,
-           suggestion: $c.suggestion, verdict_evidence: $v.evidence, __pos: $c.index} ]
+    | ([ $live[] | . as $c | $verdicts[(.index | tostring)] as $v
+         | select($v != null and $v.verdict != "REFUTED")
+         | {severity: $c.severity, verdict: $v.verdict, angle: $c.angle, title: $c.title,
+            file: $c.file, line: $c.line, evidence: $c.evidence, why: $c.why,
+            suggestion: $c.suggestion, verdict_evidence: $v.evidence, __pos: $c.index} ]
+       # Pass-through candidates carry the default verdict and say so: the main session must
+       # not mistake them for verifier-checked findings.
+       + [ $passthrough[] | . as $c
+           | {severity: $c.severity, verdict: "PLAUSIBLE", angle: $c.angle, title: $c.title,
+              file: $c.file, line: $c.line, evidence: $c.evidence, why: $c.why,
+              suggestion: $c.suggestion,
+              verdict_evidence: "UNVERIFIED — cleanup-angle candidate passed through without a verifier (policy); check the claimed cost against the code before acting",
+              unverified: true, __pos: $c.index} ])
       | sort_by(orderkey + [.__pos])
+      | map(. as $f | if (($stale | index($f.file // "")) != null) then . + {stale: true} else . end)
       | map(del(.__pos)) as $findings
 
-    | (reduce $live[] as $c ({bug: 0, bugref: 0, cleanup: 0, cleanupref: 0};
+    | (reduce $live[] as $c ({bug: 0, bugref: 0, cleanup: 0, cleanupref: 0, cleanuppass: 0};
          ($verdicts[($c.index | tostring)].verdict == "REFUTED") as $isref
+         | ($verdicts[($c.index | tostring)] == null and $c.unverified_by_policy == true) as $ispass
          | if (($c.angle // "") | isbug)
            then .bug += 1 | (if $isref then .bugref += 1 else . end)
-           else .cleanup += 1 | (if $isref then .cleanupref += 1 else . end) end)) as $class
+           else .cleanup += 1 | (if $isref then .cleanupref += 1 else . end)
+                | (if $ispass then .cleanuppass += 1 else . end) end)) as $class
 
-    | {findings: $findings, raw: ($all | length), verified: ($findings | length),
+    | {findings: $findings, raw: ($all | length),
+       verified: ([ $findings[] | select(.unverified != true) ] | length),
+       passthrough: ($passthrough | length),
+       stale: ([ $findings[] | select(.stale == true) ] | length),
+       stale_files: $stale,
        refuted: ($refuted | length), merged: $merged, unverified: ($unverified | length),
        class: $class}
     ' --argjson candidates "$(cat "$normalized_file")" \
-      --argjson verdicts "$verdicts")" || die "findings assembly failed"
+      --argjson verdicts "$verdicts" \
+      --argjson stale "$stale_json")" || die "findings assembly failed"
 
   printf '%s' "$result" | jq --indent 1 '.findings' > "$OUTDIR/findings.json" \
     || die "cannot write findings.json"
 
   printf '%s' "$result" | jq -r '
-    "wrote out/findings.json with \(.verified) finding(s)",
+    "wrote out/findings.json with \(.findings | length) finding(s)",
     ("STATS: \(.raw) raw, \(.verified) verified, \(.refuted) refuted"
+     + (if .passthrough > 0 then ", \(.passthrough) cleanup passed through unverified" else "" end)
      + (if .merged > 0 then ", \(.merged) merged as duplicates" else "" end)
      + (if .unverified > 0 then ", \(.unverified) unverified (dropped)" else "" end)),
-    "BY CLASS: bug-angle \(.class.bug) raw/\(.class.bugref) refuted; cleanup \(.class.cleanup) raw/\(.class.cleanupref) refuted"'
+    ("BY CLASS: bug-angle \(.class.bug) raw/\(.class.bugref) refuted; cleanup \(.class.cleanup) raw/\(.class.cleanupref) refuted"
+     + (if .class.cleanuppass > 0 then "/\(.class.cleanuppass) passed through" else "" end)),
+    (if .stale > 0
+     then "STALE: \(.stale) finding(s) marked stale — their file changed since the packet was built: \(.stale_files | join(", "))"
+     else empty end)'
   return 0
 }
 
@@ -681,7 +875,7 @@ cmd_build() {
 
 usage() {
   echo "usage: findings.sh pending --run-dir DIR" >&2
-  echo "       findings.sh prepare --run-dir DIR [--batch-size N] [--drop 3,7]" >&2
+  echo "       findings.sh prepare --run-dir DIR [--batch-size N] [--drop 3,7] [--verify-all]" >&2
   echo "       findings.sh build --run-dir DIR" >&2
   exit 1
 }
@@ -691,11 +885,13 @@ COMMAND="$1"; shift
 RUN_DIR=""
 BATCH_SIZE=12
 DROP=""
+VERIFY_ALL_JSON=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir) [ $# -ge 2 ] || usage; RUN_DIR="$2"; shift 2 ;;
     --batch-size) [ $# -ge 2 ] || usage; BATCH_SIZE="$2"; shift 2 ;;
     --drop) [ $# -ge 2 ] || usage; DROP="$2"; shift 2 ;;
+    --verify-all) VERIFY_ALL_JSON=true; shift ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac

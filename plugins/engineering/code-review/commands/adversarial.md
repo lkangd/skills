@@ -59,7 +59,7 @@ collection, reviewer dispatch, and finding verification, and hands you a consoli
 2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
    else specs already in this session's context, else ask (default: no spec).
 3. **Round 1**: launch ONE orchestrator with angles
-   `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions, design, pitfalls, wrapper`
+   `correctness, removed-behavior, callers, cleanup, conventions, design, pitfalls, wrapper`
    — plus `spec` (with one `--spec-file` per document) when §2.5 resolved spec sources —
    (§3) — the orchestrator also runs a post-verification gap sweep in this mode — or execute
    the orchestrator procedure yourself if config says `runner: in-session` (§4). Then verify

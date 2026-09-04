@@ -21,8 +21,12 @@ assert_json() {
 FAKE_RUNNER="$TMP_ROOT/fake-runner.sh"
 cat > "$FAKE_RUNNER" <<'EOF'
 #!/usr/bin/env bash
-# Record the launch flags so the test can check how agent definitions reach the session.
+# Record the launch flags and environment so the test can check how agent definitions and
+# runtime switches reach the session.
 [ -z "${CODE_REVIEW_TEST_ARGS_FILE:-}" ] || printf '%s\n' "$@" > "$CODE_REVIEW_TEST_ARGS_FILE"
+[ -z "${CODE_REVIEW_TEST_ARGS_FILE:-}" ] \
+  || printf 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=%s\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS:-unset}" \
+       > "$CODE_REVIEW_TEST_ARGS_FILE.env"
 printf '%s\n' '```json' '[]' '```'
 EOF
 chmod +x "$FAKE_RUNNER"
@@ -123,18 +127,39 @@ assert_json "$SMALL_RUN/out/orchestrator.exit" '. == 0'
 # Reviewer/verifier definitions are agent files that embed the packet verbatim in their system
 # prompt (one shared, cacheable prefix per tier) and reach the session via --add-dir; the angle
 # prompts must therefore steer reviewers to the addendum instead of re-reading packet.md.
-for agent in reviewer-deep:opus reviewer:sonnet verifier:sonnet; do
+for agent in reviewer-deep:opus:20 reviewer:sonnet:20 verifier:sonnet:15; do
   name="${agent%%:*}"
-  model="${agent##*:}"
+  rest="${agent#*:}"
+  model="${rest%%:*}"
+  turns="${rest##*:}"
   file="$SMALL_RUN/agents/.claude/agents/$name.md"
   [ -r "$file" ] || fail "launcher did not write agent definition: $file"
   [ "$(sed -n '1p' "$file")" = "---" ] || fail "agent file has no leading frontmatter: $file"
   grep -q "^name: $name\$" "$file" || fail "agent file lacks name $name: $file"
   grep -q "^model: $model\$" "$file" || fail "agent file lacks model $model: $file"
+  # The turn budget is structural (frontmatter) and stated to the agent in the same number.
+  grep -q "^maxTurns: $turns\$" "$file" || fail "agent file lacks maxTurns $turns: $file"
+  grep -Fq "HARD cap of $turns turns" "$file" || fail "agent prompt does not state its turn budget: $file"
+  ! grep -Fq 'TURN_BUDGET' "$file" || fail "agent prompt kept the raw TURN_BUDGET placeholder: $file"
   grep -q '^tools: Read, Grep, Glob, Bash$' "$file" || fail "agent file lost its tool allowlist: $file"
   grep -Fq 'small change' "$file" || fail "agent file does not embed the packet diff: $file"
   grep -Fq '# Review Packet' "$file" || fail "agent file lacks the packet heading: $file"
 done
+# Subagents must run in the foreground: a backgrounded reviewer returns async_launched to the
+# harvester and its result never reaches a checkpoint.
+grep -Fxq 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1' "$SMALL_RUN/runner-args.txt.env" \
+  || fail "runner was not launched with CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
+# The diff spec is persisted so findings.sh build can detect files edited under the review.
+assert_json "$SMALL_RUN/launch-params.json" '.version == 1 and .diff_args == "HEAD^..HEAD"'
+# The addendum is built by the launcher, not the orchestrator; with no convention documents in
+# the repo and a committed-range target it says so in both sections.
+[ -r "$SMALL_RUN/packet-addendum.md" ] || fail "launcher did not pre-build the packet addendum"
+grep -Fq 'No project convention documents' "$SMALL_RUN/packet-addendum.md" \
+  || fail "addendum does not state that no convention documents exist"
+grep -Fq 'Not applicable: the target is a committed range' "$SMALL_RUN/packet-addendum.md" \
+  || fail "addendum does not state that untracked files do not apply to a committed range"
+grep -Fq 'is ALSO pre-built' "$SMALL_RUN/orchestrator-prompt.md" \
+  || fail "orchestrator prompt does not tell the orchestrator the addendum is pre-built"
 grep -Fxq -- "--add-dir" "$SMALL_RUN/runner-args.txt" \
   || fail "runner was not launched with --add-dir"
 grep -Fxq -- "$SMALL_RUN/agents" "$SMALL_RUN/runner-args.txt" \
@@ -162,6 +187,28 @@ rm -rf "$LEGACY_RESUME_RUN/agents" "$LEGACY_RESUME_RUN/out/orchestrator.exit" \
   || fail "resume did not rebuild missing agent definitions"
 grep -Fq 'small change' "$LEGACY_RESUME_RUN/agents/.claude/agents/reviewer.md" \
   || fail "rebuilt agent definition does not embed the packet"
+# A run whose agent files predate turn budgets (present but without maxTurns) is upgraded on
+# resume rather than dispatching unbounded agents again.
+sed -i.bak '/^maxTurns:/d' "$LEGACY_RESUME_RUN"/agents/.claude/agents/*.md
+rm -f "$LEGACY_RESUME_RUN"/agents/.claude/agents/*.bak \
+  "$LEGACY_RESUME_RUN/out/orchestrator.exit" "$LEGACY_RESUME_RUN/out/orchestrator.out"
+(
+  cd "$REPO"
+  CODE_REVIEW_TEST_ARGS_FILE="$LEGACY_RESUME_RUN/runner-args.txt" \
+    bash "$LAUNCHER" --resume --runner "$FAKE_RUNNER" --run-dir "$LEGACY_RESUME_RUN" >/dev/null
+)
+grep -q '^maxTurns: 15$' "$LEGACY_RESUME_RUN/agents/.claude/agents/verifier.md" \
+  || fail "resume kept a legacy agent definition without maxTurns"
+
+# Turn-budget overrides must be positive: maxTurns 0 would be a reviewer that can do nothing.
+ZERO_BUDGET_RUN="$TMP_ROOT/zero-budget-run"
+if (cd "$REPO" && CODE_REVIEW_VERIFIER_MAX_TURNS=0 bash "$LAUNCHER" --runner "$FAKE_RUNNER" \
+    --run-dir "$ZERO_BUDGET_RUN" --target t --diff-args "HEAD^..HEAD" --angles correctness \
+    >/dev/null 2> "$TMP_ROOT/zero-budget.err"); then
+  fail "launcher accepted a zero turn budget"
+fi
+grep -q 'must be positive integers' "$TMP_ROOT/zero-budget.err" \
+  || fail "zero turn budget rejection did not explain itself"
 
 # A round that includes `design` declares the Step 3.5 sweep as a late wave up front, and its
 # prompt keeps exactly one runtime placeholder for the orchestrator to fill.
@@ -201,11 +248,104 @@ grep -q 'unknown angle (no template): missing-angle' "$TMP_ROOT/unknown.err" \
 [ ! -e "$UNKNOWN_RUN/review-plan.json" ] \
   || fail "launcher persisted a plan before rejecting the unknown angle"
 
+# A working-tree target's untracked files land in the addendum at launch; a small one no longer
+# forces a draft plan the orchestrator has to finalize by hand.
 WORKTREE_RUN="$TMP_ROOT/worktree-run"
 printf '%s\n' 'untracked content' > "$REPO/untracked.txt"
+printf '%s\n' 'tracked edit' >> "$REPO/example.txt"
 run_launcher "$WORKTREE_RUN" "HEAD" "correctness"
-assert_json "$WORKTREE_RUN/review-plan.json" '.status == "draft"'
+assert_json "$WORKTREE_RUN/review-plan.json" '.status == "ready"'
+grep -Fq '### untracked.txt (1 lines)' "$WORKTREE_RUN/packet-addendum.md" \
+  || fail "addendum does not list the untracked file"
+grep -Fq 'untracked content' "$WORKTREE_RUN/packet-addendum.md" \
+  || fail "addendum does not embed the untracked file content"
+# Untracked files are in no diff; their launch-time checksums let build detect later edits.
+grep -q "^untracked.txt	$(cksum < "$REPO/untracked.txt" | cut -d' ' -f1)\$" "$WORKTREE_RUN/untracked-sums.txt" \
+  || fail "launcher did not record the untracked file checksum"
 rm "$REPO/untracked.txt"
+git -C "$REPO" checkout -q -- example.txt
+
+# An untracked symlink is described, never dereferenced: it can point outside the repo and the
+# addendum leaves the machine.
+SYMLINK_RUN="$TMP_ROOT/symlink-run"
+printf '%s\n' 'SECRET-OUTSIDE-REPO' > "$TMP_ROOT/outside.txt"
+ln -s "$TMP_ROOT/outside.txt" "$REPO/link.txt"
+run_launcher "$SYMLINK_RUN" "HEAD" "correctness"
+grep -Fq 'symbolic link to' "$SYMLINK_RUN/packet-addendum.md" \
+  || fail "addendum does not describe the untracked symlink"
+! grep -Fq 'SECRET-OUTSIDE-REPO' "$SYMLINK_RUN/packet-addendum.md" \
+  || fail "addendum embedded the content behind an untracked symlink"
+rm "$REPO/link.txt"
+
+# Path-local conventions are found along untracked paths too, and a nested document alone is
+# enough to keep the conventions angle.
+UNTRACKED_CONVENTIONS_RUN="$TMP_ROOT/untracked-conventions-run"
+mkdir -p "$REPO/pkg"
+printf '%s\n' 'Pkg rules: no globals' > "$REPO/pkg/AGENTS.md"
+git -C "$REPO" add pkg/AGENTS.md
+git -C "$REPO" commit -qm "pkg rules"
+printf '%s\n' 'new module' > "$REPO/pkg/new.js"
+run_launcher "$UNTRACKED_CONVENTIONS_RUN" "HEAD" "correctness, conventions"
+grep -Fq '### pkg/AGENTS.md' "$UNTRACKED_CONVENTIONS_RUN/packet-addendum.md" \
+  || fail "addendum misses the AGENTS.md along an untracked file's path"
+assert_json "$UNTRACKED_CONVENTIONS_RUN/review-plan.json" '
+  .requested_angles == ["correctness", "conventions"]'
+rm "$REPO/pkg/new.js"
+git -C "$REPO" rm -q pkg/AGENTS.md
+git -C "$REPO" commit -qm "drop pkg rules"
+
+# A large untracked file still tips a working-tree target into a draft plan.
+BIG_UNTRACKED_RUN="$TMP_ROOT/big-untracked-run"
+: > "$REPO/big-untracked.txt"
+line=1
+while [ "$line" -le 1600 ]; do
+  printf 'line %s\n' "$line" >> "$REPO/big-untracked.txt"
+  line=$((line + 1))
+done
+run_launcher "$BIG_UNTRACKED_RUN" "HEAD" "correctness"
+assert_json "$BIG_UNTRACKED_RUN/review-plan.json" '.status == "draft"'
+grep -Fq '### big-untracked.txt (1600 lines, first 400 shown)' "$BIG_UNTRACKED_RUN/packet-addendum.md" \
+  || fail "addendum does not cap and label a long untracked file"
+rm "$REPO/big-untracked.txt"
+
+# The conventions angle only runs when there is a convention document to cite. Without one the
+# launcher drops it (and says so); with one it stays and the document travels in the addendum.
+NO_CONVENTIONS_RUN="$TMP_ROOT/no-conventions-run"
+run_launcher "$NO_CONVENTIONS_RUN" "HEAD^..HEAD" "correctness, conventions" 2> "$TMP_ROOT/no-conventions.err"
+assert_json "$NO_CONVENTIONS_RUN/review-plan.json" '
+  .requested_angles == ["correctness"] and [.tasks[].id] == ["correctness"]'
+assert_json "$NO_CONVENTIONS_RUN/launch-params.json" '.requested_angles == ["correctness"]'
+grep -q "angle 'conventions' skipped" "$TMP_ROOT/no-conventions.err" \
+  || fail "launcher did not explain the skipped conventions angle"
+grep -Fq 'conventions' "$NO_CONVENTIONS_RUN/orchestrator-prompt.md" \
+  && grep -Fq 'dropped by the launcher' "$NO_CONVENTIONS_RUN/orchestrator-prompt.md" \
+  || fail "orchestrator prompt does not note the dropped conventions angle"
+[ ! -e "$NO_CONVENTIONS_RUN/prompts/conventions.md" ] \
+  || fail "launcher concretized a prompt for the dropped conventions angle"
+
+# Requested alone, conventions is kept even without documents: the user asked for exactly that.
+ONLY_CONVENTIONS_RUN="$TMP_ROOT/only-conventions-run"
+run_launcher "$ONLY_CONVENTIONS_RUN" "HEAD^..HEAD" "conventions"
+assert_json "$ONLY_CONVENTIONS_RUN/review-plan.json" '.requested_angles == ["conventions"]'
+
+WITH_CONVENTIONS_RUN="$TMP_ROOT/with-conventions-run"
+printf '%s\n' '# Project rules' 'Always use tabs.' > "$REPO/CLAUDE.md"
+mkdir -p "$REPO/sub"
+printf '%s\n' 'Sub rules: no console.log' > "$REPO/sub/AGENTS.md"
+printf '%s\n' 'inner' > "$REPO/sub/inner.txt"
+git -C "$REPO" add CLAUDE.md sub/AGENTS.md sub/inner.txt
+git -C "$REPO" commit -qm conventions
+run_launcher "$WITH_CONVENTIONS_RUN" "HEAD^..HEAD" "correctness, conventions"
+assert_json "$WITH_CONVENTIONS_RUN/review-plan.json" '
+  .requested_angles == ["correctness", "conventions"]'
+grep -Fq '### CLAUDE.md' "$WITH_CONVENTIONS_RUN/packet-addendum.md" \
+  || fail "addendum does not include the root CLAUDE.md"
+grep -Fq 'Always use tabs.' "$WITH_CONVENTIONS_RUN/packet-addendum.md" \
+  || fail "addendum does not embed the CLAUDE.md content"
+grep -Fq '### sub/AGENTS.md' "$WITH_CONVENTIONS_RUN/packet-addendum.md" \
+  || fail "addendum does not include the AGENTS.md along a changed path"
+git -C "$REPO" rm -q CLAUDE.md sub/AGENTS.md sub/inner.txt
+git -C "$REPO" commit -qm "drop conventions"
 
 # Create a committed diff whose unified form exceeds the split threshold.
 : > "$REPO/large.txt"

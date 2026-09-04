@@ -2,6 +2,11 @@
 # Persist completed reviewer/verifier Agent results directly from a Claude session transcript.
 # This runs beside the orchestrator process so one failed tool call cannot strand the other
 # completed results behind the parent model's tool-call barrier.
+#
+# Two transcript shapes carry a result: a foreground Agent call returns it in the tool_result
+# block; a background one returns "async_launched" there and delivers the result later in a
+# user message wrapping <task-notification>. Both are harvested (observed: one runner model
+# backgrounded every dispatch, and every round on it produced zero checkpoints).
 set -u
 
 usage() {
@@ -96,18 +101,25 @@ $(printf '%s\n' "$line" | jq -r '
 EOF
 }
 
+# The receipt is the first ```json fence in the agent's final text. Some runner models
+# (observed: 1 in 8 verifier results on a ccsp gateway) return the bare JSON with no fence,
+# so an unfenced text that parses as JSON is accepted too — checkpoint_is_valid still decides
+# whether the shape is a receipt.
 payload_from_event() {
   local event="$1"
   printf '%s\n' "$event" | jq -c '
-    .text
-    | split("\n")
-    | reduce .[] as $line ({inside: false, done: false, lines: []};
-        if .done then .
-        elif (.inside | not) and $line == "```json" then .inside = true
-        elif .inside and $line == "```" then .inside = false | .done = true
-        elif .inside then .lines += [$line]
-        else . end)
-    | if .done then (.lines | join("\n") | fromjson?) else empty end
+    .text as $text
+    | ($text | split("\n")
+       | reduce .[] as $line ({inside: false, done: false, lines: []};
+           if .done then .
+           elif (.inside | not) and ($line | test("^```json[[:space:]]*$")) then .inside = true
+           elif .inside and ($line | test("^```[[:space:]]*$")) then .inside = false | .done = true
+           elif .inside then .lines += [$line]
+           else . end)) as $fenced
+    | if $fenced.done then ($fenced.lines | join("\n") | fromjson?)
+      else ($text | sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; "")
+            | select(startswith("{") or startswith("[")) | fromjson?)
+      end
   '
 }
 
@@ -180,10 +192,27 @@ $(printf '%s\n' "$line" | jq -c '
     if type == "string" then .
     elif type == "array" then [ .[] | select(.type == "text") | .text ] | join("\n")
     else "" end;
-  select((.message.content? | type) == "array")
-  | .message.content[]
-  | select(.type == "tool_result")
-  | {tool_id: .tool_use_id, text: (.content | text_content)}
+  # Between the two tags, inclusive of everything in between (the result may itself contain
+  # angle brackets), so slice from the first opening tag to the last closing tag.
+  def between($open; $close):
+    (index($open)) as $a | (rindex($close)) as $b
+    | if $a == null or $b == null or $b < $a then empty
+      else .[($a + ($open | length)):$b] end;
+  # Foreground subagent: the receipt is the tool_result body.
+  (select((.message.content? | type) == "array")
+   | .message.content[]
+   | select(.type == "tool_result")
+   | {tool_id: .tool_use_id, text: (.content | text_content)}),
+  # Background subagent (Claude Code runs Agent calls async by default since 2026-W27; the
+  # launcher forces foreground, but a model that backgrounds anyway must still checkpoint):
+  # the tool_result only says async_launched and the receipt arrives later as a user message
+  # wrapping <task-notification> with the tool-use id and the final text of the agent.
+  (select(.type == "user")
+   | (.message.content? | text_content) as $t
+   | select($t | contains("<task-notification>"))
+   | ($t | between("<tool-use-id>"; "</tool-use-id>") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $id
+   | select($id != "")
+   | {tool_id: $id, text: ($t | between("<result>"; "</result>"))})
 ')
 EOF
 }
@@ -196,7 +225,10 @@ process_line() {
 
 scan_new_lines() {
   local complete_lines count start
-  find_transcript || return 0
+  # Until the session has written its first line there is nothing to scan; poll slowly then.
+  # `find` across ~/.claude/projects every 200 ms costs more than the session start it waits for.
+  find_transcript || { POLL_INTERVAL=1; return 0; }
+  POLL_INTERVAL=0.2
   complete_lines="$(wc -l < "$TRANSCRIPT" | tr -d ' ')"
   [ "$complete_lines" -ge "$NEXT_LINE" ] || return 0
   start="$NEXT_LINE"
@@ -211,8 +243,9 @@ if [ "$WATCH" = "0" ]; then
   exit 0
 fi
 
+POLL_INTERVAL=0.2
 while kill -0 "$PARENT_PID" 2>/dev/null; do
   scan_new_lines || exit 1
-  sleep 0.2
+  sleep "$POLL_INTERVAL"
 done
 scan_new_lines || exit 1

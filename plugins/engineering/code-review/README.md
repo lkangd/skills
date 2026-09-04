@@ -11,7 +11,7 @@ fixes what is real, files what must wait, and reports.
 
 | command | what it does |
 |---|---|
-| `/code-review <target> [-c=N] [--spec=<path>,...]` | One review round: 8 parallel reviewer angles (line-by-line correctness, removed-behavior audit, cross-file callers, reuse, simplification, efficiency, altitude, documented conventions — CLAUDE.md, CONTRIBUTING, coding standards) plus an optional spec-conformance angle when a spec source is resolved → independent verifiers confirm/refute each candidate → main agent re-verifies → fixes confirmed in-scope issues, backlogs deferred ones, rejects false positives with reasons. |
+| `/code-review <target> [-c=N] [--spec=<path>,...]` | One review round: 5 parallel reviewer angles — three bug hunters (line-by-line correctness, removed-behavior audit, cross-file callers), one `cleanup` reviewer covering reuse / simplification / altitude / efficiency, and documented conventions (CLAUDE.md, CONTRIBUTING, coding standards; skipped automatically when the repo has none) — plus an optional spec-conformance angle when a spec source is resolved → independent verifiers confirm/refute each bug-class candidate (cleanup candidates pass through marked unverified) → main agent re-verifies → fixes confirmed in-scope issues, backlogs deferred ones, rejects false positives with reasons. |
 | `/code-review:adversarial <target> [-c=N] [--max-rounds=N]` | The same round 1 plus three deep angles (design/assumption challenge, language-pitfall specialist, wrapper/proxy correctness) and a post-verification gap sweep, then loops: fix → single re-review of the cumulative diff → fix … until a round yields no confirmed major/critical findings or `max_rounds` (default 3) is hit. |
 | `/code-review:setup` | Interactive per-project configuration, written to `.claude/code-review.local.md`. Runs automatically on first use. |
 
@@ -60,7 +60,21 @@ process:
 > rewrites or blocks Bash commands will fire on the orchestrator's own tooling — one observed
 > round lost three turns to a hook rejecting `jq --slurpfile` as dangerous. If a round stalls
 > on shell commands, check `RUN_DIR/out/orchestrator.err` and the hook's own logs before
-> suspecting the plugin.
+> suspecting the plugin. `Stop` hooks are the other cost: they fire once per orchestrator
+> turn, so a hook that spawns a process adds its runtime 15–20 times per round.
+
+> **Background subagents**: Claude Code runs `Agent` calls in the background by default in
+> recent versions, and some gateway models background every dispatch regardless of the
+> prompt. The launcher sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` to keep reviewers in the
+> foreground (where the orchestrator's turn waits for them), and the transcript harvester
+> also understands the `<task-notification>` messages a backgrounded agent reports through,
+> so checkpoints are written either way.
+
+> **Third-party gateways and prompt caching**: the packet-in-system-prompt design pays off
+> only when the gateway serves prompt-cache reads. Observed hit rates: Anthropic and the
+> Kimi/GLM endpoints 85–95%; GPT-family endpoints behind ccsp 2–10%, i.e. every reviewer
+> turn re-pays the whole packet. On such a gateway prefer `concurrency: 4`, a narrower
+> target, or a runner preset whose reviewer tiers point at a caching model.
 
 ## How a round works
 
@@ -68,14 +82,16 @@ The current session never orchestrates. It resolves the review target, launches 
 orchestrator session, and acts on the consolidated result.
 
 1. **Orchestrate (inside the orchestrator session)**:
-   - writes the packet addendum — the launcher script already built the review packet
-     (target, `--stat` list, spec documents, full diff), pre-concretized every angle-prompt
-     file, and embedded the packet verbatim in the system prompt of the reviewer and verifier
-     agent definitions (all at zero model-token cost, outside the session); the orchestrator
-     only adds relevant `CLAUDE.md` excerpts and untracked-file content to a small
-     `packet-addendum.md`. Reviewers thus start with the whole diff in context instead of
-     re-exploring the repo N times, under an explicit turn budget (batched tool calls, ~12
-     calls max);
+   - starts dispatching immediately — the launcher script already built the review packet
+     (target, `--stat` list, spec documents, full diff) and its addendum (convention
+     documents such as `CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`, untracked-file content
+     for working-tree targets), pre-concretized every angle-prompt file, and embedded the
+     packet verbatim in the system prompt of the reviewer and verifier agent definitions
+     (all at zero model-token cost, outside the session). Reviewers thus start with the
+     whole diff in context instead of re-exploring the repo N times, under an explicit turn
+     budget (batched tool calls, ~12 calls, and a hard `maxTurns` of 20 in the agent
+     definition — a runaway reviewer is cut off and retried once, never left to burn
+     50M tokens);
    - dispatches one read-only reviewer **subagent** per angle — or, when the diff exceeds
      ~1,500 lines, several per high-risk angle, each restricted to a coherent file-group slice —
      choosing the model tier by task complexity (opus = bug-hunting angles, sonnet = cleanup
@@ -84,9 +100,13 @@ orchestrator session, and acts on the consolidated result.
      instead of self-censoring — filtering is the verify pass's job. Every reviewer returns a
      `{"status":"completed","findings":[...]}` receipt; an empty `findings` array explicitly
      records a successful zero-finding review, so interrupted runs never repeat that angle;
-   - **verifies** every candidate with independent verifier subagents that return
+   - **verifies** every bug-class candidate with independent verifier subagents that return
      `CONFIRMED` / `PLAUSIBLE` / `REFUTED` per candidate (PLAUSIBLE is the default; REFUTED
-     requires evidence constructible from the code) and drops only the refuted ones;
+     requires evidence constructible from the code) and drops only the refuted ones.
+     Cleanup-class candidates (reuse, simplification, altitude, efficiency) skip the
+     verifier — across 458 observed candidates verifiers refuted 7% of them while consuming
+     half of all verifier time — and reach the report marked `unverified: true` for the main
+     session to judge;
    - writes the consolidated findings array to `RUN_DIR/out/findings.json` (the
      authoritative payload the main session parses) and ends with a two-line
      `CODE-REVIEW RESULT` receipt — every inter-agent handoff (reviewer → orchestrator →
@@ -94,14 +114,16 @@ orchestrator session, and acts on the consolidated result.
      cannot break the protocol by translating labels, and the findings JSON is generated
      once, never re-emitted through the model.
 
-   The bookkeeping between those steps — normalizing paths, numbering candidates, splitting
-   them into verifier batches, joining verdicts back on — is done by `scripts/findings.sh`,
+   The bookkeeping between those steps — normalizing paths, numbering candidates, merging
+   literal repeats, splitting them into verifier batches, joining verdicts back on, marking
+   findings whose file changed under the review as `stale` — is done by `scripts/findings.sh`,
    not by the model. **findings.json is uncapped**: every candidate that survives
    verification is reported, ordered most severe first. An earlier 12-finding cap (a leftover
    from when findings were inlined in the final message) was observed discarding 2 critical
    and 8 major verified findings in a single round.
 2. **Verify & act (back in the current session)**: the main agent re-confirms each surviving
-   finding against the code. Confirmed and in scope → fixed now. Confirmed but pre-existing /
+   finding against the code (`stale` ones first, `unverified` ones with extra care).
+   Confirmed and in scope → fixed now. Confirmed but pre-existing /
    too large → one file per issue in the backlog (default `docs/code-review-backlog/`,
    git-tracked, with status tracking and a suggested fix approach). Not confirmed → rejected
    with a stated reason.
@@ -136,11 +158,16 @@ descendant agents:
 ```yaml
 ---
 runner: claude              # or "ccsp -g <preset> claude", or "in-session"
-concurrency: 0              # 0 = unlimited; -c=N overrides per run
+concurrency: 0              # 0 = unlimited; -c=N overrides per run (setup suggests 4 for
+                            # third-party gateways, whose rate limits turn 8 parallel
+                            # reviewers into 429 retries)
 max_rounds: 3               # adversarial loop cap; --max-rounds=N overrides
 backlog_dir: docs/code-review-backlog
 ---
 ```
+
+Environment knobs read by the launcher: `CODE_REVIEW_REVIEWER_MAX_TURNS` (default 20) and
+`CODE_REVIEW_VERIFIER_MAX_TURNS` (default 15) set the per-agent `maxTurns` budget.
 
 > **Where the tokens go**: the dominant per-round input cost was never the subagents' fixed
 > prefix (system prompt, CLAUDE.md, tools — identical across siblings and already served from

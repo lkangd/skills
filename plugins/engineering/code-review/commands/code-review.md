@@ -56,7 +56,7 @@ Raw arguments: `$ARGUMENTS`
 
 Read `PLUGIN_ROOT/references/review-core.md` and execute it in **single-pass mode**
 (one review round, no loop). You do not orchestrate the review — one orchestrator session does
-the diff collection, 8-angle reviewer dispatch, and finding verification, and hands you a
+the diff collection, 5-angle reviewer dispatch, and finding verification, and hands you a
 consolidated report:
 
 1. Safety rules (§0), load config (§1) — run setup first if `.claude/code-review.local.md` is
@@ -64,7 +64,7 @@ consolidated report:
 2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
    else specs already in this session's context, else ask (default: no spec).
 3. Launch ONE orchestrator via the bundled script with angles
-   `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions`
+   `correctness, removed-behavior, callers, cleanup, conventions`
    — plus `spec` (with one `--spec-file` per document) when §2.5 resolved spec sources —
    (§3), or execute the orchestrator procedure yourself if config says `runner: in-session`
    (§4). Wait for the consolidated, verified (CONFIRMED / PLAUSIBLE) findings.

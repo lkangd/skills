@@ -123,10 +123,13 @@ never fabricate a spec, and never block the review on one.
    `--diff-args` by target type — single commit `X`: `X^..X`; commit range `A..B`: `A^..B`;
    staged: `--cached`; working tree: `HEAD`; files: `HEAD -- <paths>`; branch:
    `<base>...HEAD`.
-   Angle lists — round 1 always dispatches the full 8-angle set (3 bug-hunting + 4
-   cleanup/altitude + conventions):
+   Angle lists — round 1 always dispatches the full 5-angle set (3 bug-hunting + the merged
+   `cleanup` angle covering reuse/simplification/altitude/efficiency + conventions):
    `/code-review` round 1:
-   `correctness, removed-behavior, callers, reuse, simplification, efficiency, altitude, conventions`;
+   `correctness, removed-behavior, callers, cleanup, conventions`;
+   (the launcher drops `conventions` by itself when the repo has no convention documents —
+   nothing to cite — and says so in its stderr and the orchestrator prompt; report it as
+   skipped, not reviewed);
    `/code-review:adversarial` round 1: those plus `design, pitfalls, wrapper` (the presence
    of `design` also makes the orchestrator run a post-verification gap sweep); when §2.5
    resolved spec sources, append `spec` to the round-1 list and pass one `--spec-file` per
@@ -141,9 +144,14 @@ never fabricate a spec, and never block the review on one.
 4. Read the result. The authoritative payload is **`RUN_DIR/out/findings.json`**: an array
    of finding objects (`severity`, `verdict`, `angle`, `title`, `file`, `line`, `evidence`,
    `why`, `suggestion`, `verdict_evidence`), already verified (verdict `CONFIRMED` or
-   `PLAUSIBLE`; refuted candidates were dropped inside the orchestrator). The array is
+   `PLAUSIBLE`; refuted candidates were dropped inside the orchestrator). Two optional
+   boolean fields qualify an entry: `unverified: true` marks a cleanup-angle finding that
+   skipped the verifier by policy (verdict is the default `PLAUSIBLE`, and
+   `verdict_evidence` says so) — the cost claim is the reviewer's alone; `stale: true` marks
+   a finding whose file changed after the packet was built — re-read the current code before
+   acting, the cited line may have moved or the issue may already be gone. The array is
    uncapped and ordered most severe first, correctness before cleanup at equal severity — a
-   thorough adversarial round on a large diff can return 30–40 findings, which is a working
+   thorough adversarial round on a large diff can return 20–40 findings, which is a working
    list to triage in order, not a signal that something went wrong.
    `RUN_DIR/out/orchestrator.out` holds a two-line receipt (`CODE-REVIEW RESULT:` marker +
    stats); treat it as prose and survive its absence or translation. Fallback: if
@@ -203,7 +211,8 @@ substitutions:
   behavior is intended, only its uncovered consequences are findings; omit the section when
   there is no spec), and the full
   `git diff <args>` output, using the same `--diff-args` mapping as §3. Then gather what
-  orchestrator.md Step 1 puts in the addendum (conventions, untracked files) and **append it
+  the launcher puts in the addendum (see "Packet addendum" in orchestrator.md: convention
+  documents, untracked files) and **append it
   to `packet.md` instead** — in-session there is no addendum file: the `code-review:reviewer`
   agent is a static plugin definition with no packet in its system prompt, so reviewers read
   the packet from disk and everything must be inside that one file. Likewise
@@ -217,13 +226,22 @@ substitutions:
   it and say whether it fits in one `Read` (the tool rejects anything over 25,000 tokens) or
   must be read in sequential chunks, and at what chunk size. `sweep.md`'s
   `{{VERIFIED_FINDINGS}}` is the one placeholder filled later.
+- Also write `RUN_DIR/launch-params.json` (`{"version": 1, "requested_angles": [...],
+  "diff_args": "<the resolved diff args, e.g. HEAD or main...HEAD>"}`) and, for a working-tree
+  target, `RUN_DIR/untracked-sums.txt` (one `<path>\t<cksum>` line per untracked file you
+  appended to the packet, from `cksum < file | cut -d' ' -f1`). `findings.sh build` re-runs the
+  diff named by `diff_args` and compares those checksums to mark `stale: true` on findings
+  whose file changed during the round; without these files it silently marks nothing.
 - Create `RUN_DIR/review-plan.json` alongside the prompts with top-level `version: 2`,
-  `status: "ready"`, immutable `requested_angles` containing the unsliced angle list,
+  immutable `requested_angles` containing the unsliced angle list,
   `late_waves` (`[{"wave":2,"angles":["sweep"]}]` when the round includes `design`, else `[]`),
   and `tasks`. Each task is `{id, angle, wave}` with `wave: 1` for the review plan proper; its
   prompt is always `RUN_DIR/prompts/<id>.md` and is never stored. A normal angle uses its angle
-  name as the task ID; large-diff
-  slices use `<angle>-<N>` starting at 1 and replace that angle's base task. Write the finished
+  name as the task ID. Apply the launcher's large-diff rule yourself: when the uncapped
+  `git diff <args>` line count plus the untracked files' line count exceeds 1,500, the plan is
+  `draft` and you finish it per orchestrator.md Step 1 (slice tasks `<angle>-<N>` starting at 1
+  replace that angle's base task, with a `prompts/<id>.md` per slice); otherwise write it with
+  `status: "ready"`. Write the finished
   plan atomically. Before every initial/resume dispatch, run
   `scripts/findings.sh pending --run-dir RUN_DIR` and dispatch exactly those task IDs. Then run
   `prepare` before verification and `build` before reporting instead of doing that bookkeeping
@@ -258,8 +276,9 @@ before acting — the finding's `verdict_evidence` field says what would confirm
 classify:
 
 - **Confirmed, in scope** → fix it now with the smallest change that resolves it. For
-  cleanup/altitude/conventions findings "confirmed" means the cost is real and the suggested
-  simpler/deeper form actually works.
+  cleanup/conventions findings "confirmed" means the cost is real and the suggested
+  simpler/deeper form actually works — and for entries marked `unverified: true` you are the
+  first and only check, so read the code before believing the cost.
 - **Confirmed, but out of scope** (pre-existing, or the fix is large/risky relative to the
   review target) → file it in the backlog: one file per issue in `backlog_dir` following
   `PLUGIN_ROOT/references/backlog-template.md`. Glob the backlog dir first and update
