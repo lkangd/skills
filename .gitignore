@@ -61,4 +61,5 @@ docs/handoffs/
 
 # code-review plugin run artifacts (old and current locations)
 .claude/code-review/
+.claude/code-review.local.md
 .code-review/
