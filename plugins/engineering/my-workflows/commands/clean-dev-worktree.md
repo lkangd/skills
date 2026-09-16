@@ -19,11 +19,14 @@ Clean local development resources for branch `$ARGUMENTS` after the feature has 
 
 ## Plugin root
 
-Resolve **PLUGIN_ROOT** with a Bash tool call before running the script. Do not use load-time bang-backtick for this: `printenv VAR` exits 1 when unset and aborts command load.
+Resolve **PLUGIN_ROOT** with this Bash tool call (not load-time bang-backtick). `printenv`
+alone is not enough: later Bash calls do not receive `CLAUDE_PLUGIN_ROOT`.
 
-printenv CLAUDE_PLUGIN_ROOT
+```bash
+bash -c 'r=$(printenv CLAUDE_PLUGIN_ROOT 2>/dev/null); [ -f "$r/scripts/clean-dev-worktree.sh" ] || r=$(ls -td "$HOME"/.claude/plugins/cache/*/my-workflows/*/scripts/clean-dev-worktree.sh 2>/dev/null | head -1); r=${r%/scripts/clean-dev-worktree.sh}; printf "%s\n" "${r:-UNRESOLVED}"'
+```
 
-If that command fails or prints nothing, stop and explain that the plugin installation could not be located. Do not write `${CLAUDE_PLUGIN_ROOT}` into later Bash tool calls.
+The printed path is **PLUGIN_ROOT**. Do not write `${CLAUDE_PLUGIN_ROOT}` into later Bash tool calls. If the result is `UNRESOLVED`, stop and explain that the plugin installation could not be located.
 
 ## Execute
 

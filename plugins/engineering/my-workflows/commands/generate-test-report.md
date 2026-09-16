@@ -2,6 +2,7 @@
 description: Analyze a specified change scope and write an audience-focused test report
 argument-hint: <change scope> [--view=e2e|code-review|both] [--output=<path>]
 allowed-tools:
+  - Bash(bash:*)
   - Bash(printenv:*)
   - Bash(git status:*)
   - Bash(git diff:*)
@@ -21,11 +22,14 @@ allowed-tools:
 
 ## Plugin root
 
-Resolve **PLUGIN_ROOT** with a Bash tool call before reading plugin files. Do not use load-time bang-backtick for this: `printenv VAR` exits 1 when unset and aborts command load.
+Resolve **PLUGIN_ROOT** with this Bash tool call (not load-time bang-backtick). `printenv`
+alone is not enough: later Bash calls do not receive `CLAUDE_PLUGIN_ROOT`.
 
-printenv CLAUDE_PLUGIN_ROOT
+```bash
+bash -c 'r=$(printenv CLAUDE_PLUGIN_ROOT 2>/dev/null); [ -f "$r/references/test-report-template.md" ] || r=$(ls -td "$HOME"/.claude/plugins/cache/*/my-workflows/*/references/test-report-template.md 2>/dev/null | head -1); r=${r%/references/test-report-template.md}; printf "%s\n" "${r:-UNRESOLVED}"'
+```
 
-If that command fails or prints nothing, stop and explain that the plugin installation could not be located. Do not write `${CLAUDE_PLUGIN_ROOT}` into later Read or Bash tool calls.
+The printed path is **PLUGIN_ROOT**. Do not write `${CLAUDE_PLUGIN_ROOT}` into later Read or Bash tool calls. If the result is `UNRESOLVED`, stop and explain that the plugin installation could not be located.
 
 ## Request
 
