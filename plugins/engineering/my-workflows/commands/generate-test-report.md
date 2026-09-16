@@ -21,7 +21,7 @@ allowed-tools:
 
 ## Plugin root
 
-Resolved plugin root: `!`printf "%s\n" "${CLAUDE_PLUGIN_ROOT:-UNRESOLVED}"``
+Resolved plugin root: !`printf "%s\n" "${CLAUDE_PLUGIN_ROOT:-UNRESOLVED}"`
 
 The absolute path printed above is **PLUGIN_ROOT** for this run. Do not use the literal `${CLAUDE_PLUGIN_ROOT}` in later Read or Bash tool calls. If the value is `UNRESOLVED`, stop and explain that the plugin installation could not be located.
 
