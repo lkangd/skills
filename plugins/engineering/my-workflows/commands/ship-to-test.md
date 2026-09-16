@@ -7,7 +7,14 @@ allowed-tools:
   - Bash(npm:*)
   - Bash(curl:*)
   - Bash(node:*)
+  - Bash(printenv:*)
 ---
+
+## Plugin root
+
+Resolved plugin root: !`printenv CLAUDE_PLUGIN_ROOT`
+
+The absolute path printed above is **PLUGIN_ROOT**. Do not use the literal `${CLAUDE_PLUGIN_ROOT}` in later Bash tool calls. If the value is empty, stop and explain that the plugin installation could not be located.
 
 ## Context
 
@@ -39,7 +46,7 @@ You have the capability to call multiple tools in a single response. Stage and c
 Run (append `--audit-user "$ARGUMENTS"` when `$ARGUMENTS` is non-empty):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-run.js" run
+node "PLUGIN_ROOT/scripts/ship-to-test-run.js" run
 ```
 
 The script internally runs in order: environment checks (auto-install yunke-cli if missing, GitLab token check) → `git pull --rebase` + `git push` → yunke-cli query chain (branch status / repo / app / reviewers) → create MR, then **verify via the GitLab API that the MR head is exactly this round's commit** → merge MR → resolve and confirm the target-side merge/squash SHA on the `f` branch → wait out the Mars snapshot window → record the test-branch baseline → trigger every ship-to-test target (environments whose `env_code` contains `test` and whose `app_name` matches the directory name) → poll until every repository's target-side SHA is actually present on the mapped test branch. The yunke success response only means the trigger was accepted; it is not deployment completion. Prerequisite query results and verification progress are stored in the state file and reused verbatim on resume; parameters are not re-inferred. If a non-primary repository's MR merger list does not include the chosen reviewer (Mars: `获取审核人Id失败` / `用户不存在`), skip that repository, continue with the rest, and surface the reason as a `NOTE` / `skipped_repos` entry — do not treat it as a pipeline failure or ask the user to pick another reviewer for it.
@@ -68,7 +75,7 @@ Handle based on the trailing `STATUS`:
   - **commit message too long**: The message exceeds the 255-char MR title limit. Shorten it with `git commit --amend` (keep the subject, trim the body), then resume; if `DETAIL` says the commit was already pushed, the resume's push will need `git push --force-with-lease`.
   - **environment does not support ship-to-test**: A deploy target was rejected by the platform (e.g. `❌ 不支持的环境`). Retrying never helps — ask the user whether to skip that environment, and if they agree resume with the `--skip-env` already included in `RESUME` (the decision is recorded in the state file, and successfully deployed environments are not redeployed).
   - **rebase conflict**: Inspect the conflict yourself and decide whether it can be resolved safely (e.g. pure formatting, clearly unrelated changes). If yes, resolve, run `git rebase --continue`, then resume via `RESUME`; if not, involve the user and resume after they confirm it is done.
-  - **reviewer pending selection**: `DETAIL` already includes the candidate list; ask the user to choose, and also ask whether to register the chosen reviewer as `*` (all projects). After selection, put the chosen `user_name` into the `RESUME` command's `--audit-user` and continue (the script writes project memory); if the user agrees to register as `*`, also run `node "${CLAUDE_PLUGIN_ROOT}/scripts/ship-to-test-run.js" register-global <user_name>`.
+  - **reviewer pending selection**: `DETAIL` already includes the candidate list; ask the user to choose, and also ask whether to register the chosen reviewer as `*` (all projects). After selection, put the chosen `user_name` into the `RESUME` command's `--audit-user` and continue (the script writes project memory); if the user agrees to register as `*`, also run `node "PLUGIN_ROOT/scripts/ship-to-test-run.js" register-global <user_name>`.
   - **missing GitLab token**: Ask the user to set the `MY_WORKFLOW_GL_ACCESS_TOKEN` environment variable, then resume (do not print its value).
 - **`STATUS: ERROR`**: Read `STEP` and `DETAIL`. If it can be fixed safely (e.g. push rejected and needs sync first), fix then resume via `RESUME`; otherwise explain the failure and suggested actions to the user, and wait for confirmation before resuming. Common causes of MR creation failure: title too long, insufficient Mars permissions, no diff between branches. Common causes of MR merge failure: pipeline not passed, approval required, or conflicts — the script already ruled out "nothing left to merge" before reporting a merge failure, so do not close the MR yourself. If deploy verification times out, report that the trigger may already be running but the mapped test branch does not yet contain every target SHA; resume with the printed command to continue verification without retriggering. If an environment ends as `status: stale_deploy`, the ship-to-test really ran but Mars shipped the `f` branch as it was *before* this round's merge, and the script's retriggers did not fix it — report it as an empty ship-to-test (naming the stale source SHA from `stale_deploys`), tell the user the test environment does not have this code, and offer either resuming (which retriggers once more) or checking the branch snapshot in Mars manually. If an environment ends as `unverifiable`, the platform accepted the trigger but that `env_code` has no known GitLab test-branch mapping, so content could not be checked — report it as unverified and ask the user to confirm the environment manually; resuming will not retrigger it.
 

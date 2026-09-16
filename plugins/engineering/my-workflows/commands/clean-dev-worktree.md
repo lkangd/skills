@@ -3,6 +3,7 @@ description: Clean dev branch worktrees and VS Code workspace
 argument-hint: <branch-name> [--force]
 allowed-tools:
   - Bash(bash:*)
+  - Bash(printenv:*)
 ---
 
 ## Goal
@@ -16,11 +17,17 @@ Clean local development resources for branch `$ARGUMENTS` after the feature has 
 5. Delete the local branch in each related repository.
 6. Delete the workspace file after all related worktrees and local branches are cleaned.
 
+## Plugin root
+
+Resolved plugin root: !`printenv CLAUDE_PLUGIN_ROOT`
+
+The absolute path printed above is **PLUGIN_ROOT**. Do not use the literal `${CLAUDE_PLUGIN_ROOT}` in later Bash tool calls. If the value is empty, stop and explain that the plugin installation could not be located.
+
 ## Execute
 
-Run the bundled cleanup script exactly once and use its output as the source of truth:
+Run the bundled cleanup script exactly once with Bash and use its output as the source of truth:
 
-!`bash "${CLAUDE_PLUGIN_ROOT}/scripts/clean-dev-worktree.sh" "$ARGUMENTS"`
+bash "PLUGIN_ROOT/scripts/clean-dev-worktree.sh" "$ARGUMENTS"
 
 ## Report
 

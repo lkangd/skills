@@ -27,14 +27,22 @@ run any tool.
 
 ## Plugin root — resolve before any script call
 
-Resolved plugin root: !`bash -c 'r="${CLAUDE_PLUGIN_ROOT}"; [ -f "$r/scripts/run-orchestrator.sh" ] || r=$(ls -td "$HOME"/.claude/plugins/cache/*/code-review/*/scripts/run-orchestrator.sh 2>/dev/null | head -1); r=${r%/scripts/run-orchestrator.sh}; printf "%s\n" "${r:-UNRESOLVED}"'`
+Resolved plugin root: !`printenv CLAUDE_PLUGIN_ROOT`
 
 The absolute path printed above is **PLUGIN_ROOT** for this run. `CLAUDE_PLUGIN_ROOT` is *not*
 exported into Bash or Read tool calls, so any command carrying the literal
 `${CLAUDE_PLUGIN_ROOT}` expands to an empty string and dies with exit 127 before the
 orchestrator starts. Wherever review-core.md writes `PLUGIN_ROOT`, substitute that absolute
-path. If it printed `UNRESOLVED`, stop and tell the user the plugin install could not be
-located.
+path.
+
+If that value is empty, or `PLUGIN_ROOT/scripts/run-orchestrator.sh` is missing, run this Bash
+tool call and replace **PLUGIN_ROOT** with its output:
+
+```bash
+bash -c 'r=$(ls -td "$HOME"/.claude/plugins/cache/*/code-review/*/scripts/run-orchestrator.sh 2>/dev/null | head -1); r=${r%/scripts/run-orchestrator.sh}; printf "%s\n" "${r:-UNRESOLVED}"'
+```
+
+If the result is `UNRESOLVED`, stop and tell the user the plugin install could not be located.
 
 ## Arguments
 

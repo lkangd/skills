@@ -2,7 +2,7 @@
 description: Analyze a specified change scope and write an audience-focused test report
 argument-hint: <change scope> [--view=e2e|code-review|both] [--output=<path>]
 allowed-tools:
-  - Bash(printf:*)
+  - Bash(printenv:*)
   - Bash(git status:*)
   - Bash(git diff:*)
   - Bash(git show:*)
@@ -21,9 +21,9 @@ allowed-tools:
 
 ## Plugin root
 
-Resolved plugin root: !`printf "%s\n" "${CLAUDE_PLUGIN_ROOT:-UNRESOLVED}"`
+Resolved plugin root: !`printenv CLAUDE_PLUGIN_ROOT`
 
-The absolute path printed above is **PLUGIN_ROOT** for this run. Do not use the literal `${CLAUDE_PLUGIN_ROOT}` in later Read or Bash tool calls. If the value is `UNRESOLVED`, stop and explain that the plugin installation could not be located.
+The absolute path printed above is **PLUGIN_ROOT** for this run. Do not use the literal `${CLAUDE_PLUGIN_ROOT}` in later Read or Bash tool calls. If the value is empty, stop and explain that the plugin installation could not be located.
 
 ## Request
 
