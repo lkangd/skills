@@ -19,30 +19,32 @@ allowed-tools:
 
 ## Recursion guard — check before anything else
 
-Sentinel value (must be empty): !`printenv CODE_REVIEW_CHILD`
+Before any other tool call, run:
 
-If the sentinel value above is non-empty, you are running inside a reviewer process. Reply
+printenv CODE_REVIEW_CHILD
+
+If it prints a non-empty value, you are running inside a reviewer process. Reply
 exactly: "Refusing: /code-review invoked from inside a code-review reviewer." and stop. Do not
-run any tool.
+run any other tool. If the command fails or prints nothing, continue.
 
 ## Plugin root — resolve before any script call
 
-Resolved plugin root: !`printenv CLAUDE_PLUGIN_ROOT`
+Resolve **PLUGIN_ROOT** with Bash tool calls. Do not use load-time bang-backtick for env vars:
+`printenv VAR` exits 1 when unset and aborts command load; `${…}` is rejected as expansion.
 
-The absolute path printed above is **PLUGIN_ROOT** for this run. `CLAUDE_PLUGIN_ROOT` is *not*
-exported into Bash or Read tool calls, so any command carrying the literal
-`${CLAUDE_PLUGIN_ROOT}` expands to an empty string and dies with exit 127 before the
-orchestrator starts. Wherever review-core.md writes `PLUGIN_ROOT`, substitute that absolute
-path.
-
-If that value is empty, or `PLUGIN_ROOT/scripts/run-orchestrator.sh` is missing, run this Bash
-tool call and replace **PLUGIN_ROOT** with its output:
+1. `printenv CLAUDE_PLUGIN_ROOT` — use that path when `PLUGIN_ROOT/scripts/run-orchestrator.sh`
+   exists.
+2. Otherwise run:
 
 ```bash
 bash -c 'r=$(ls -td "$HOME"/.claude/plugins/cache/*/code-review/*/scripts/run-orchestrator.sh 2>/dev/null | head -1); r=${r%/scripts/run-orchestrator.sh}; printf "%s\n" "${r:-UNRESOLVED}"'
 ```
 
-If the result is `UNRESOLVED`, stop and tell the user the plugin install could not be located.
+`CLAUDE_PLUGIN_ROOT` is *not* exported into later Bash or Read tool calls, so any command
+carrying the literal `${CLAUDE_PLUGIN_ROOT}` expands to an empty string and dies with exit 127
+before the orchestrator starts. Wherever review-core.md writes `PLUGIN_ROOT`, substitute the
+absolute path from step 1 or 2. If the result is `UNRESOLVED`, stop and tell the user the
+plugin install could not be located.
 
 ## Arguments
 

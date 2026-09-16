@@ -12,9 +12,11 @@ Create a sibling git worktree for the current repository using branch `$ARGUMENT
 
 ## Plugin root
 
-Resolved plugin root: !`printenv CLAUDE_PLUGIN_ROOT`
+Resolve **PLUGIN_ROOT** with a Bash tool call before running the script. Do not use load-time bang-backtick for this: `printenv VAR` exits 1 when unset and aborts command load.
 
-The absolute path printed above is **PLUGIN_ROOT**. Do not use the literal `${CLAUDE_PLUGIN_ROOT}` in later Bash tool calls. If the value is empty, stop and explain that the plugin installation could not be located.
+printenv CLAUDE_PLUGIN_ROOT
+
+If that command fails or prints nothing, stop and explain that the plugin installation could not be located. Do not write `${CLAUDE_PLUGIN_ROOT}` into later Bash tool calls.
 
 ## Execute
 
