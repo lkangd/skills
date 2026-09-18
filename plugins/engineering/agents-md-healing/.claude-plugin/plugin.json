@@ -1,0 +1,8 @@
+{
+  "name": "agents-md-healing",
+  "description": "Refactor a bloated AGENTS.md / CLAUDE.md into a minimal root plus disclosed docs: resolve contradictions with the user first, keep only what every task needs, group the rest behind pointers, flag no-ops and stale lines for deletion.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}

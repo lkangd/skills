@@ -18,6 +18,18 @@
       ]
     },
     {
+      "name": "agents-md-healing",
+      "source": "./plugins/engineering/agents-md-healing",
+      "description": "Refactor a bloated AGENTS.md / CLAUDE.md into a minimal root plus disclosed docs: resolve contradictions with the user first, keep only what every task needs, group the rest behind pointers, flag no-ops and stale lines for deletion.",
+      "category": "engineering",
+      "tags": [
+        "agents-md",
+        "claude-md",
+        "progressive-disclosure",
+        "documentation"
+      ]
+    },
+    {
       "name": "commit-commands",
       "source": "./plugins/engineering/commit-commands",
       "description": "Streamline your git workflow with simple commands for committing, pushing, and creating pull requests",
