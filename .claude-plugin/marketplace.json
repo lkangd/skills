@@ -77,10 +77,23 @@
       ]
     },
     {
+      "name": "wrapup",
+      "source": "./plugins/productivity/wrapup",
+      "description": "Wrap up a session with current-worktree checks, full test gates, scoped commits, and a call to the handoff skill for the next agent.",
+      "category": "productivity",
+      "tags": [
+        "wrapup",
+        "handoff",
+        "git",
+        "tests",
+        "conversation"
+      ]
+    },
+    {
       "name": "handoff",
-      "source": "./plugins/engineering/handoff",
-      "description": "Compact the current conversation into a handoff document for another agent to pick up.",
-      "category": "engineering",
+      "source": "./plugins/productivity/handoff",
+      "description": "Summarize the current conversation into a handoff document for the next agent, following save-location preferences without running tests or creating commits.",
+      "category": "productivity",
       "tags": [
         "handoff",
         "agent",

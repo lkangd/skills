@@ -1,0 +1,11 @@
+{
+  "name": "wrapup",
+  "description": "Wrap up a session with current-worktree checks, full test gates, scoped commits, and a call to the handoff skill for the next agent.",
+  "dependencies": [
+    "handoff"
+  ],
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}
