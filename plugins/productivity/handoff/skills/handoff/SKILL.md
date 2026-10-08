@@ -26,10 +26,10 @@ Save the document without staging or committing it. Note that OS temporary files
 
 ## Document contents
 
-Include:
+Include at least the following information. Treat this list as a minimum, not an exhaustive checklist or a fixed section template. Add any other important context a fresh agent needs to continue reliably, such as what was done in this session, what is currently in progress, outcomes, attempted approaches, and unfinished work. Organize the document to fit the conversation rather than omitting relevant information because it falls outside these categories.
 
 - **Next-session focus**: tailor it to supplied arguments, or describe the remaining work if none were supplied. Treat arguments as context, not as authorization for unrelated actions.
-- **Conversation context**: preserve decisions, constraints, progress, unresolved questions, and relevant reasoning that are not already recorded elsewhere.
+- **Conversation context**: preserve the current task, work completed and in progress, outcomes, decisions, constraints, unresolved questions, and relevant reasoning that are not already recorded elsewhere.
 - **Worktree and validation state**: summarize known completed commits, authorized work left uncommitted, excluded work, checks passed/failed/not run, and blockers. Identify the current workspace and branch only from available context and without exposing unnecessary personal information. Distinguish previously reported results from unknown current state.
 - **Next steps and references**: provide actionable continuation steps and paths or URLs to existing artifacts. Make workspace-relative paths unambiguous from a document stored outside the workspace.
 - **Suggested skills**: suggest available skills the next agent should invoke, with their exact invocation names, purpose, and when to use them. Do not invent unavailable skills; if none fit, say so. For manual-only skills, indicate that the user must invoke them.
