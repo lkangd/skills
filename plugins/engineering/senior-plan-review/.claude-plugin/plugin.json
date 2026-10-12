@@ -1,0 +1,9 @@
+{
+  "name": "senior-plan-review",
+  "version": "1.2.0",
+  "description": "Risk-tiered plan review for senior engineers: turns an agent's implementation plan into a short decision brief (intent, approach, alternatives, risks, impact, validation, decisions, recommendation) and states exactly what approval is required before execution.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}

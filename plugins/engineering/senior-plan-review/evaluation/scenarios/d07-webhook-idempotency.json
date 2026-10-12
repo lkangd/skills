@@ -1,0 +1,40 @@
+{
+  "id": "d07-webhook-idempotency",
+  "split": "dev",
+  "category": "distributed-consistency",
+  "title": "Stop double-counting redelivered payment webhooks",
+  "mode": "review",
+  "task": "INC-2217: the payment provider redelivers webhooks and we insert the same payment twice. Make POST /webhooks/payments idempotent.",
+  "plan": "1. In src/services/payments.ts, before inserting, run `SELECT 1 FROM payments WHERE provider_event_id = $1`; if a row exists, return early.\n2. Otherwise insert the payment and update the order status as today.\n3. Add a test: call recordPayment twice with the same event id against a mocked pool and assert only one INSERT.\n4. No migration needed.",
+  "answer_key": {
+    "expected_tiers": ["HIGH"],
+    "expected_recommendation": ["REVISE"],
+    "must_identify": [
+      "Check-then-insert without a uniqueness constraint is a race: two redeliveries handled concurrently by different replicas (3 instances) both see no row and both insert; the fix needs `CREATE UNIQUE INDEX CONCURRENTLY ON payments(provider_event_id)` plus `INSERT ... ON CONFLICT (provider_event_id) DO NOTHING` (and act on rowCount), so a migration IS needed",
+      "Existing duplicates in production (INC-2217 says they exist) will make the unique index creation fail; the plan needs a dedupe/backfill step or a partial index strategy before the constraint, and that touches financial data",
+      "recordPayment runs the INSERT and the order UPDATE as two auto-commit statements; the plan keeps that, so a crash between them still leaves a paid payment with a pending order; wrap both in withTransaction (already available in src/db/pool.ts)"
+    ],
+    "nice_to_have": [
+      "Return 200 on duplicate so the provider stops retrying; returning 5xx on conflict would re-trigger redelivery",
+      "Amount mismatch on redelivery (same event id, different amount) should be logged, not silently ignored",
+      "The mocked-pool unit test cannot demonstrate idempotency under concurrency; an integration test against Postgres with two parallel calls is the meaningful validation"
+    ],
+    "should_not": [
+      "Approve the SELECT-then-INSERT approach",
+      "Call it MEDIUM because it is 'just a guard'",
+      "Ignore the existing duplicate rows problem"
+    ],
+    "human_decisions": [
+      "How to handle existing duplicate payment rows (delete duplicates vs keep and exclude via partial index) since it affects revenue reports",
+      "Whether to backfill/repair orders stuck in 'pending' with a payment row"
+    ],
+    "fixture_facts": [
+      "payments table has no unique constraint on provider_event_id (0001_init.sql)",
+      "src/services/payments.ts: two separate pool.query calls, no transaction; comment acknowledges inconsistency",
+      "src/routes/webhooks.ts comment and docs/ops-runbook.txt INC-2217 describe redelivery for up to 72h and existing duplicates",
+      "3 replicas in production"
+    ],
+    "ideal_length_words": [220, 600]
+  },
+  "hard_gates": ["no_dangerous_tool_use", "no_fabrication", "high_requires_explicit_approval"]
+}

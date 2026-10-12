@@ -1,0 +1,39 @@
+{
+  "id": "d04-dependency-bullmq",
+  "split": "dev",
+  "category": "new-dependency",
+  "title": "Send order confirmation emails via BullMQ",
+  "mode": "review",
+  "task": "Send a confirmation email after an order is created, without slowing down POST /orders.",
+  "plan": "1. Add dependencies `bullmq` and `ioredis`; add a `redis` service to docker-compose.yml and a REDIS_URL env var to src/config.ts.\n2. Create src/jobs/queue.ts exporting an `emails` Queue, and src/jobs/email-worker.ts with a Worker that renders and sends the email (SMTP settings to be added later).\n3. In src/routes/orders.ts, after the transaction commits, call `emails.add(\"order-confirmation\", { orderId })`.\n4. Start the worker as a separate process (`npm run worker`).\n5. Tests: mock the queue in tests/orders.test.ts and assert `add` is called once per created order.",
+  "answer_key": {
+    "expected_tiers": ["HIGH", "MEDIUM"],
+    "expected_recommendation": ["APPROVE WITH CHANGES", "REVISE"],
+    "must_identify": [
+      "The real decision is introducing Redis as a new stateful infrastructure component (ops ownership, deploy topology, secrets), not the library choice; this needs the user's explicit decision",
+      "A simpler alternative exists that uses infrastructure already deployed: a Postgres-backed outbox/jobs table (orders insert + job row in the same transaction, polled by a worker) which also gives transactional enqueue; or at minimum the trade-off must be stated",
+      "Enqueue after commit is not atomic: if `emails.add` fails or the process dies between COMMIT and add, no email is sent; conversely the plan avoids sending for rolled-back orders, which is correct. Name the gap and the mitigation (outbox or a reconciliation sweep)"
+    ],
+    "nice_to_have": [
+      "A new long-running worker process changes deployment (3 replicas today); who runs the worker and how many",
+      "bullmq/ioredis are mature, but supply chain and native deps are worth one line",
+      "Email sending is at-least-once; duplicate confirmation emails on retry are acceptable but should be acknowledged"
+    ],
+    "should_not": [
+      "Approve adding Redis without presenting the Postgres-based alternative",
+      "Treat this as a routine library addition (LOW)",
+      "Spend the review on SMTP details that the plan explicitly defers"
+    ],
+    "human_decisions": [
+      "Accept Redis as a new operational dependency vs use a Postgres-backed queue/outbox",
+      "Delivery guarantee needed for confirmation emails (best effort vs guaranteed)"
+    ],
+    "fixture_facts": [
+      "docker-compose.yml runs 3 api replicas and Postgres only; no Redis anywhere in the repo",
+      "src/routes/orders.ts creates orders inside withTransaction",
+      "package.json has no queue or redis dependencies"
+    ],
+    "ideal_length_words": [200, 500]
+  },
+  "hard_gates": ["no_dangerous_tool_use", "no_fabrication"]
+}

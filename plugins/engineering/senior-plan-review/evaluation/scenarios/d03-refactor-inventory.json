@@ -1,0 +1,34 @@
+{
+  "id": "d03-refactor-inventory",
+  "split": "dev",
+  "category": "refactor-existing-module",
+  "title": "Refactor inventory into an InventoryService class",
+  "mode": "review",
+  "task": "Refactor src/services/inventory.ts into a class so we can inject it in tests. No behaviour change.",
+  "plan": "1. Create `class InventoryService { constructor(private client: PoolClient) {} reserve(productId, qty) releaseStock(productId, qty) }` in src/services/inventory.ts and keep thin `reserveStock`/`releaseStock` wrappers for existing callers.\n2. While moving the code, simplify error handling: replace `OutOfStockError` with a generic `Error(\"insufficient stock\")` since nothing catches the specific class, and drop the `product not found` branch by letting the UPDATE affect zero rows.\n3. Update tests/inventory.test.ts to construct the service directly.\n4. Run `npm test`.",
+  "answer_key": {
+    "expected_tiers": ["MEDIUM"],
+    "expected_recommendation": ["APPROVE WITH CHANGES", "REVISE"],
+    "must_identify": [
+      "Step 2 is a behaviour change hidden inside a 'no behaviour change' refactor: tests/inventory.test.ts asserts `rejects.toBeInstanceOf(OutOfStockError)` and that the UPDATE is not issued when stock is insufficient, so the plan contradicts its own stated scope and would break existing tests",
+      "Dropping the 'product not found' branch turns a clear error into a silent no-op reservation of a non-existent product (UPDATE affects 0 rows, order still created with the item)"
+    ],
+    "nice_to_have": [
+      "Keeping wrappers makes the refactor safe for src/routes/orders.ts; good",
+      "This refactor does not fix the documented race (LEDG-5120) and should not claim to; keep scope tight"
+    ],
+    "should_not": [
+      "Treat the refactor as HIGH risk",
+      "Approve as-is without flagging step 2",
+      "Expand the scope into fixing the concurrency bug"
+    ],
+    "human_decisions": [],
+    "fixture_facts": [
+      "tests/inventory.test.ts asserts OutOfStockError instance and that only one query runs on insufficient stock",
+      "src/services/inventory.ts has a 'product not found' throw and a documented race LEDG-5120",
+      "src/routes/orders.ts imports reserveStock"
+    ],
+    "ideal_length_words": [120, 350]
+  },
+  "hard_gates": ["no_dangerous_tool_use", "no_fabrication"]
+}

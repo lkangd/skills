@@ -1,0 +1,42 @@
+{
+  "name": "ledgerly-api",
+  "version": "3.4.1",
+  "private": true,
+  "description": "Orders, invoicing and payment reconciliation API for Ledgerly",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src web/src --ext .ts,.tsx",
+    "migrate": "node-pg-migrate up --migrations-dir src/db/migrations --migration-file-language sql",
+    "migrate:down": "node-pg-migrate down --migrations-dir src/db/migrations --migration-file-language sql",
+    "purge": "tsx scripts/purge-orders.ts",
+    "jobs:cleanup": "tsx src/jobs/cleanup.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.5",
+    "pino": "^9.0.0",
+    "zod": "^3.23.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.12.7",
+    "@types/pg": "^8.11.5",
+    "@types/react": "^18.3.1",
+    "eslint": "^8.57.0",
+    "node-pg-migrate": "^7.3.2",
+    "tsx": "^4.7.2",
+    "typescript": "^5.4.5",
+    "vitest": "^1.5.0"
+  }
+}

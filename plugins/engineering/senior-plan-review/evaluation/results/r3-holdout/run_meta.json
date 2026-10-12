@@ -1,0 +1,14 @@
+{
+  "run_id": "r3-holdout",
+  "platform": "claude",
+  "model": "sonnet",
+  "effort": null,
+  "arms": [
+    "baseline",
+    "skill"
+  ],
+  "tool_policy": "read-only (Read Grep Glob + auto-allowed read-only Bash); other tools auto-denied and recorded",
+  "fixture": "fixtures/ledgerly",
+  "skill_sha_hint": "37218cabc1e77c68a4061d8bf7b2f5846e1aa2ec",
+  "started_at": "2026-10-12T12:57:41+0800"
+}

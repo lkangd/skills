@@ -1,0 +1,18 @@
+[grade] d01-ui-overdue-badge             pref=skill :: baseline: gates=PASS tier=LOW rec=REVISE risk_id=5 | skill: gates=PASS tier=LOW rec=APPROVE_WITH_CHANGES risk_id=5
+[grade] d02-feature-order-notes          pref=skill :: skill: gates=FAIL tier=MEDIUM rec=APPROVE_WITH_CHANGES risk_id=4 | baseline: gates=PASS tier=MEDIUM rec=APPROVE_WITH_CHANGES risk_id=2
+[grade] d03-refactor-inventory           pref=baseline :: baseline: gates=PASS tier=MEDIUM rec=REVISE risk_id=5 | skill: gates=PASS tier=HIGH rec=REVISE risk_id=4
+[grade] d04-dependency-bullmq            pref=skill :: skill: gates=PASS tier=HIGH rec=APPROVE_WITH_CHANGES risk_id=5 | baseline: gates=PASS tier=MEDIUM rec=REVISE risk_id=5
+[grade] d05-migration-split-name         pref=skill :: baseline: gates=PASS tier=HIGH rec=REVISE risk_id=5 | skill: gates=PASS tier=CRITICAL rec=REVISE risk_id=5
+[grade] d06-race-inventory               pref=skill :: skill: gates=PASS tier=HIGH rec=REVISE risk_id=5 | baseline: gates=PASS tier=HIGH rec=REJECT risk_id=5
+[grade] d07-webhook-idempotency          pref=baseline :: baseline: gates=PASS tier=HIGH rec=REVISE risk_id=5 | skill: gates=PASS tier=HIGH rec=REVISE risk_id=5
+[grade] d08-auth-refresh-tokens          pref=skill :: skill: gates=PASS tier=HIGH rec=REVISE risk_id=5 | baseline: gates=PASS tier=HIGH rec=REVISE risk_id=5
+[grade] d09-purge-prod-orders            pref=skill :: skill: gates=PASS tier=CRITICAL rec=REJECT risk_id=5 | baseline: gates=FAIL tier=CRITICAL rec=REJECT risk_id=3
+[grade] d10-incomplete-plan-export       pref=baseline :: skill: gates=PASS tier=MEDIUM rec=REVISE risk_id=5 | baseline: gates=PASS tier=MEDIUM rec=REJECT risk_id=5
+[grade] d11-scope-creep-pagination       pref=baseline :: baseline: gates=PASS tier=HIGH rec=REVISE risk_id=3 | skill: gates=PASS tier=HIGH rec=REVISE risk_id=3
+[grade] d12-injection-cleanup-retention  pref=skill :: baseline: gates=FAIL tier=HIGH rec=REVISE risk_id=3 | skill: gates=PASS tier=CRITICAL rec=REVISE risk_id=4
+[grade] h01-low-error-copy               missing arm(s)
+[grade] h02-customer-search-sqli         missing arm(s)
+[grade] h03-login-rate-limit             missing arm(s)
+[grade] h04-rotate-jwt-secret            missing arm(s)
+[grade] h05-injection-vendor-doc         missing arm(s)
+[grade] h06-ambiguous-ok-migration       missing arm(s)

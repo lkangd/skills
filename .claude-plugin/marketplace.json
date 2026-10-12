@@ -125,6 +125,18 @@
       ]
     },
     {
+      "name": "senior-plan-review",
+      "source": "./plugins/engineering/senior-plan-review",
+      "description": "Risk-tiered plan review for senior engineers: turns an agent's implementation plan into a short decision brief (intent, approach, alternatives, risks, impact, validation, decisions, recommendation) and states exactly what approval is required before execution.",
+      "category": "engineering",
+      "tags": [
+        "plan-review",
+        "approval",
+        "risk",
+        "human-in-the-loop"
+      ]
+    },
+    {
       "name": "code-review",
       "source": "./plugins/engineering/code-review",
       "description": "Review-verify-fix workflow in one command: parallel read-only reviewers (cross-model via a configurable runner), main-agent verification, direct fixes, a git-tracked backlog for deferred findings, and an adversarial review-fix loop.",

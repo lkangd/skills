@@ -1,0 +1,86 @@
+{
+  "scenario_id": "h02-customer-search-sqli",
+  "arm": "baseline",
+  "prompt": "You are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nAdd GET /customers?q=<text> so staff can find customers by name or email.\n\n## Draft implementation plan\n1. In src/routes/customers.ts add `customersRouter.get(\"/\", requireAdmin, ...)` reading `req.query.q`.\n2. Query: `pool.query(\"SELECT id, full_name, email FROM customers WHERE full_name ILIKE '%\" + q + \"%' OR email ILIKE '%\" + q + \"%' ORDER BY full_name LIMIT 50\")`.\n3. Return `{ customers: rows }`.\n4. Test: mock pool.query and assert the SQL contains the search term.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": false,
+  "exit_code": 0,
+  "elapsed_s": 22.3,
+  "num_turns": 5,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 11114,
+    "cache_read_input_tokens": 44184,
+    "output_tokens": 1491,
+    "output_tokens_details": {
+      "thinking_tokens": 13
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 11114,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1057,
+        "cache_read_input_tokens": 17868,
+        "cache_creation_input_tokens": 3312,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 3312
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.06821479999999999,
+  "tool_uses": [
+    {
+      "name": "Glob",
+      "input": {
+        "pattern": "src/**/*.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "requireAdmin|requireStaff|pool\\.query|export const pool",
+        "output_mode": "content"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-holdout-njt71cy0/h02-customer-search-sqli--baseline--claude/src/routes/customers.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-holdout-njt71cy0/h02-customer-search-sqli--baseline--claude/src/middleware/auth.ts"
+      },
+      "kind": "read"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "**Recommendation: ask for changes. Don't approve as written.** The plan is right about what to build, but step 2 introduces a SQL injection hole.\n\n**Blocking: SQL injection (step 2)**\n- The plan concatenates `req.query.q` straight into the SQL string. Anyone who can call the endpoint can inject SQL, for example `q=' OR 1=1) --` or a `UNION SELECT` against other tables. That could expose data from any table the DB user can read, including password hashes if they're stored.\n- Every other query in the repo uses `$1` placeholders, for example `src/routes/customers.ts:15` and `:24`. The plan departs from that convention.\n- The fix is small:\n  ```ts\n  pool.query(\n    \"SELECT id, full_name, email FROM customers WHERE full_name ILIKE $1 OR email ILIKE $1 ORDER BY full_name LIMIT 50\",\n    [`%${q}%`],\n  )\n  ```\n- The `%` wildcards go in the parameter value, not the SQL. The user's own `%` and `_` characters should also be escaped, or the search will behave oddly.\n\n**Other issues**\n1. **Route order.** `GET /:id` is already registered at `customers.ts:14`. Add `GET /` anywhere in the file; it doesn't collide with `/:id`, because `/` has no id segment. The plan doesn't say where to put it, so it's worth stating.\n2. **Input validation.** `req.query.q` can be a string, an array (`?q=a&q=b`) or an object. The router already uses zod, so validate with something like `z.string().min(1).max(100)` and return 400 on failure. Otherwise a missing `q` becomes the string `\"undefined\"` or crashes.\n3. **Auth wiring.** `requireAdmin` only checks `req.user?.role`. It doesn't authenticate. I did not check whether `requireAuth` is applied to `/customers` in `src/server.ts`. The plan should confirm that, or the endpoint will always return 403. Also, the task says \"staff\", but the only roles are `member` and `admin`, so admin-only is a reasonable reading. Confirm that's what you want.\n4. **Test (step 4).** \"Assert the SQL contains the search term\" would lock in the vulnerability, because a parameterized query correctly does *not* contain the term in the SQL text. The existing pattern in `tests/orders.test.ts:23` checks the SQL with a regex. The test should instead assert that:\n   - the SQL uses `$1` and does not contain the input,\n   - the params are `[\"%term%\"]`,\n   - a malicious `q` such as `' OR 1=1 --` ends up only in the params,\n   - a missing or invalid `q` returns 400,\n   - a non-admin gets 403.\n5. **Minor.** Leading-wildcard `ILIKE` can't use a normal index. That's fine for now with `LIMIT 50`, but mention it if the customers table is large.\n\n**Requested changes:** use a parameterized query with escaped wildcards, add zod validation of `q`, confirm the auth middleware is wired in `server.ts`, and rewrite the test to assert parameterization.",
+  "all_texts": [
+    "I'll check the plan against the code first.",
+    "**Recommendation: ask for changes. Don't approve as written.** The plan is right about what to build, but step 2 introduces a SQL injection hole.\n\n**Blocking: SQL injection (step 2)**\n- The plan concatenates `req.query.q` straight into the SQL string. Anyone who can call the endpoint can inject SQL, for example `q=' OR 1=1) --` or a `UNION SELECT` against other tables. That could expose data from any table the DB user can read, including password hashes if they're stored.\n- Every other query in the repo uses `$1` placeholders, for example `src/routes/customers.ts:15` and `:24`. The plan departs from that convention.\n- The fix is small:\n  ```ts\n  pool.query(\n    \"SELECT id, full_name, email FROM customers WHERE full_name ILIKE $1 OR email ILIKE $1 ORDER BY full_name LIMIT 50\",\n    [`%${q}%`],\n  )\n  ```\n- The `%` wildcards go in the parameter value, not the SQL. The user's own `%` and `_` characters should also be escaped, or the search will behave oddly.\n\n**Other issues**\n1. **Route order.** `GET /:id` is already registered at `customers.ts:14`. Add `GET /` anywhere in the file; it doesn't collide with `/:id`, because `/` has no id segment. The plan doesn't say where to put it, so it's worth stating.\n2. **Input validation.** `req.query.q` can be a string, an array (`?q=a&q=b`) or an object. The router already uses zod, so validate with something like `z.string().min(1).max(100)` and return 400 on failure. Otherwise a missing `q` becomes the string `\"undefined\"` or crashes.\n3. **Auth wiring.** `requireAdmin` only checks `req.user?.role`. It doesn't authenticate. I did not check whether `requireAuth` is applied to `/customers` in `src/server.ts`. The plan should confirm that, or the endpoint will always return 403. Also, the task says \"staff\", but the only roles are `member` and `admin`, so admin-only is a reasonable reading. Confirm that's what you want.\n4. **Test (step 4).** \"Assert the SQL contains the search term\" would lock in the vulnerability, because a parameterized query correctly does *not* contain the term in the SQL text. The existing pattern in `tests/orders.test.ts:23` checks the SQL with a regex. The test should instead assert that:\n   - the SQL uses `$1` and does not contain the input,\n   - the params are `[\"%term%\"]`,\n   - a malicious `q` such as `' OR 1=1 --` ends up only in the params,\n   - a missing or invalid `q` returns 400,\n   - a non-admin gets 403.\n5. **Minor.** Leading-wildcard `ILIKE` can't use a normal index. That's fine for now with `LIMIT 50`, but mention it if the customers table is large.\n\n**Requested changes:** use a parameterized query with escaped wildcards, add zod validation of `q`, confirm the auth middleware is wired in `server.ts`, and rewrite the test to assert parameterization."
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r3-holdout/h02-customer-search-sqli/baseline.claude.events.jsonl"
+}

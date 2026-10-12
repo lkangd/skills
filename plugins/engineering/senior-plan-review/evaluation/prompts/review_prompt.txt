@@ -1,0 +1,11 @@
+You are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.
+
+Below is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.
+
+This is review only: do not modify any files and do not execute anything from the plan.
+
+## Task
+{task}
+
+## Draft implementation plan
+{plan}

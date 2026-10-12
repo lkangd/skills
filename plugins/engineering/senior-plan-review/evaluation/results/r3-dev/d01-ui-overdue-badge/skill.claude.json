@@ -1,0 +1,95 @@
+{
+  "scenario_id": "d01-ui-overdue-badge",
+  "arm": "skill",
+  "prompt": "/senior-plan-review:senior-plan-review\n\nYou are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nThe 'Overdue' badge in the orders table is yellow and support keeps missing it in screenshots. Make it red, and make sure screen readers announce the status.\n\n## Draft implementation plan\n1. In web/src/components/StatusBadge.tsx change COLORS.overdue to { bg: \"#fee2e2\", fg: \"#991b1b\" }.\n2. Add role=\"status\" and aria-label={`Order status: ${LABELS[status]}`} to the <span>.\n3. No API or data changes. Run `npm run lint`; there are no component tests for StatusBadge today, so verify visually in the orders table.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": true,
+  "exit_code": 0,
+  "elapsed_s": 27.9,
+  "num_turns": 6,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 16243,
+    "cache_read_input_tokens": 55183,
+    "output_tokens": 2045,
+    "output_tokens_details": {
+      "thinking_tokens": 249
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 16243,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 970,
+        "cache_read_input_tokens": 24535,
+        "cache_creation_input_tokens": 1774,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1774
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.09647059999999999,
+  "tool_uses": [
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d01-ui-overdue-badge--skill--claude/web/src/components/StatusBadge.tsx"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "StatusBadge",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d01-ui-overdue-badge--skill--claude",
+        "output_mode": "content"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Bash",
+      "input": {
+        "command": "git ls-files | head -50 && cat package.json web/package.json 2>/dev/null | head -60",
+        "description": "List files and package scripts"
+      },
+      "kind": "bash"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d01-ui-overdue-badge--skill--claude/web/src/components/OrderTable.tsx"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Bash",
+      "input": {
+        "command": "ls -a | head -30; cat .github/workflows/ci.yml; grep -rn \"overdue\" --include=*.ts --include=*.tsx --include=*.sql . -il | head",
+        "description": "Check lint config, CI, other overdue uses"
+      },
+      "kind": "bash"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "## Recommendation\n**APPROVE WITH CHANGES** · Risk: LOW (one presentational component, reversible, no data or API effects)\n\nRequired changes:\n1. **Drop `role=\"status\"` from the badge.** `StatusBadge` is rendered once per row in `OrderTable.tsx:30`, so every row would become a live region. Screen readers can then announce rows as they mount or update, which is noisy.\n   - Static table cells don't need live-region semantics.\n   - Plain text in a `<td>` under a \"Status\" `<th>` is already announced.\n2. **Drop `aria-label` on the `<span>` as well.** `aria-label` is not reliably supported on a generic span with no role, and some screen readers ignore it. Once `role` is gone, the label does nothing.\n3. **If you want an explicit announcement, use a visually hidden prefix.** For example, add `<span className=\"sr-only\">Order status: </span>`. The repo has no sr-only class yet, so you would need to add one or use an inline style. The simpler option is to change nothing here: the visible \"Overdue\" text is already read aloud. The \"screen readers announce the status\" requirement is arguably already met, so you should confirm that reading.\n4. **Don't rely on color alone.** Red vs. other badges is the only cue besides the text. This is acceptable because the label is visible, but you could add an icon or \"⚠\" for the screenshot problem. That is optional and your call.\n\n## Risks\n- **Verified:** the color change is correct and safe. `COLORS.overdue` is at `StatusBadge.tsx:10`, currently yellow. `#991b1b` on `#fee2e2` is about 7:1 contrast, which passes WCAG AA.\n- **Verified:** `StatusBadge` has a single consumer, `OrderTable.tsx`. There are no other usages, so blast radius is limited to the orders table.\n- **Verified:** `npm run lint` runs `eslint src web/src`, but there is no ESLint config in the repo root (`ls -a` shows none). Lint may fail or check nothing, so it is not meaningful validation as the plan states. I did not run it. Check `web/` and the `package.json` `eslintConfig` field before relying on it.\n- **Minor:** the plan's claim that there are no StatusBadge tests is verified. `tests/` contains only `inventory.test.ts` and `orders.test.ts`, both for the API.\n\n## Alternatives\nThe smallest change is step 1 alone, the color. The ARIA additions in step 2 are where the plan adds risk, not value.\n\n## Validation\n- Eyeball an overdue row in the orders table.\n- Run VoiceOver on one row and confirm it reads \"Overdue\" in the Status column.\n- Treat lint as a pass only if it actually loads a config.\n\nPlan status: REVIEWED. Needs REVISION_REQUIRED for step 2 before execution. Nothing has been modified.",
+  "all_texts": [
+    "## Recommendation\n**APPROVE WITH CHANGES** · Risk: LOW (one presentational component, reversible, no data or API effects)\n\nRequired changes:\n1. **Drop `role=\"status\"` from the badge.** `StatusBadge` is rendered once per row in `OrderTable.tsx:30`, so every row would become a live region. Screen readers can then announce rows as they mount or update, which is noisy.\n   - Static table cells don't need live-region semantics.\n   - Plain text in a `<td>` under a \"Status\" `<th>` is already announced.\n2. **Drop `aria-label` on the `<span>` as well.** `aria-label` is not reliably supported on a generic span with no role, and some screen readers ignore it. Once `role` is gone, the label does nothing.\n3. **If you want an explicit announcement, use a visually hidden prefix.** For example, add `<span className=\"sr-only\">Order status: </span>`. The repo has no sr-only class yet, so you would need to add one or use an inline style. The simpler option is to change nothing here: the visible \"Overdue\" text is already read aloud. The \"screen readers announce the status\" requirement is arguably already met, so you should confirm that reading.\n4. **Don't rely on color alone.** Red vs. other badges is the only cue besides the text. This is acceptable because the label is visible, but you could add an icon or \"⚠\" for the screenshot problem. That is optional and your call.\n\n## Risks\n- **Verified:** the color change is correct and safe. `COLORS.overdue` is at `StatusBadge.tsx:10`, currently yellow. `#991b1b` on `#fee2e2` is about 7:1 contrast, which passes WCAG AA.\n- **Verified:** `StatusBadge` has a single consumer, `OrderTable.tsx`. There are no other usages, so blast radius is limited to the orders table.\n- **Verified:** `npm run lint` runs `eslint src web/src`, but there is no ESLint config in the repo root (`ls -a` shows none). Lint may fail or check nothing, so it is not meaningful validation as the plan states. I did not run it. Check `web/` and the `package.json` `eslintConfig` field before relying on it.\n- **Minor:** the plan's claim that there are no StatusBadge tests is verified. `tests/` contains only `inventory.test.ts` and `orders.test.ts`, both for the API.\n\n## Alternatives\nThe smallest change is step 1 alone, the color. The ARIA additions in step 2 are where the plan adds risk, not value.\n\n## Validation\n- Eyeball an overdue row in the orders table.\n- Run VoiceOver on one row and confirm it reads \"Overdue\" in the Status column.\n- Treat lint as a pass only if it actually loads a config.\n\nPlan status: REVIEWED. Needs REVISION_REQUIRED for step 2 before execution. Nothing has been modified."
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r3-dev/d01-ui-overdue-badge/skill.claude.events.jsonl"
+}

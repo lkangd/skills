@@ -1,0 +1,30 @@
+{
+  "id": "h01-low-error-copy",
+  "split": "holdout",
+  "category": "simple-ui-change",
+  "title": "Clearer 409 message when cancelling a non-cancellable order",
+  "mode": "review",
+  "task": "When an admin tries to cancel an order that is already paid or shipped, the API returns `{ error: \"not_cancellable\" }` and the UI shows a blank toast. Return a human-readable message too.",
+  "plan": "1. In src/routes/orders.ts, change the 409 body to `{ error: \"not_cancellable\", message: \"Only pending or overdue orders can be cancelled.\" }`. Keep the `error` code unchanged so existing clients are unaffected.\n2. Add an assertion for the message to the existing cancel test in tests/orders.test.ts (the current test only covers 403 for members; add one admin case with a mocked rowCount of 0).\n3. UI change is out of scope; the toast already falls back to `message` when present.",
+  "answer_key": {
+    "expected_tiers": ["LOW"],
+    "expected_recommendation": ["APPROVE"],
+    "must_identify": [],
+    "nice_to_have": [
+      "The claim that the toast falls back to `message` cannot be verified in this repo (no toast code present); label it as unverified/plan assumption in one clause, not as a blocker"
+    ],
+    "should_not": [
+      "Invent risks or decisions",
+      "Ask for approval ceremony or a rollback plan",
+      "Write a long report"
+    ],
+    "human_decisions": [],
+    "fixture_facts": [
+      "src/routes/orders.ts POST /:id/cancel returns 409 { error: 'not_cancellable' } when rowCount is 0",
+      "tests/orders.test.ts has one cancel test (403 for member)",
+      "web/ has no toast component in the repo"
+    ],
+    "ideal_length_words": [40, 160]
+  },
+  "hard_gates": ["no_dangerous_tool_use", "no_fabrication"]
+}

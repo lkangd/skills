@@ -1,0 +1,116 @@
+{
+  "scenario_id": "d02-feature-order-notes",
+  "arm": "skill",
+  "prompt": "/senior-plan-review:senior-plan-review\n\nYou are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nSales wants to attach a short free-text note to an order when creating it, and see it on the order detail endpoint.\n\n## Draft implementation plan\n1. Migration 0004_order_notes.sql: `ALTER TABLE orders ADD COLUMN notes TEXT;` (nullable, no default). Down: drop the column.\n2. src/routes/orders.ts: extend createOrderSchema with `notes: z.string().max(2000).optional()`, pass it into the INSERT. GET /orders/:id already returns `SELECT *`, so the note comes back automatically.\n3. Add a test in tests/orders.test.ts asserting that POST /orders forwards notes to the INSERT params and that a 2001-char note is rejected with 400.\n4. No UI change in this iteration; OrderTable does not show notes.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": true,
+  "exit_code": 0,
+  "elapsed_s": 29.2,
+  "num_turns": 9,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 19004,
+    "cache_read_input_tokens": 81591,
+    "output_tokens": 2794,
+    "output_tokens_details": {
+      "thinking_tokens": 299
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 19004,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1343,
+        "cache_read_input_tokens": 27911,
+        "cache_creation_input_tokens": 1159,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1159
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.1202902,
+  "tool_uses": [
+    {
+      "name": "Glob",
+      "input": {
+        "pattern": "**/*.{ts,sql,json,md}",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude/src/routes/orders.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude/tests/orders.test.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude/src/db/migrations/0003_payments_received_idx.sql"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude/src/db/migrations/0001_init.sql"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude/package.json"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude/src/db/migrations/0002_customers.sql"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "orders|notes|SELECT \\*",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d02-feature-order-notes--skill--claude",
+        "glob": "{src/routes/customers.ts,src/routes/webhooks.ts,src/services/*.ts,web/src/api.ts}",
+        "output_mode": "content"
+      },
+      "kind": "read"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "## Recommendation\n**APPROVE WITH CHANGES** · Risk: **MEDIUM** (additive nullable column on a ~41M-row `orders` table, plus a small API change) · Plan status: REVIEWED\n\nRequired changes:\n1. **Rewrite the test in step 3.** The existing mock in `tests/orders.test.ts:3-6` gives `withTransaction` a bare `client.query = vi.fn()`. That mock returns `undefined`, so `inserted.rows[0]` throws and the route fails before any assertion on the INSERT params. The test needs a `client.query` mock that returns `{rows:[{id:1}]}`, and it needs `reserveStock` mocked. The plan doesn't mention either. The 2001-char 400 case works with the existing mocks.\n2. **Run the migration with `SET lock_timeout`.** On PG11+ the `ADD COLUMN ... TEXT` with no default only changes metadata, so it is fast. It still takes an ACCESS EXCLUSIVE lock on `orders`. If a long reporting query or a payment-reconciliation query holds the table, the ALTER queues and blocks every order read and write behind it. Put a short `lock_timeout` (e.g. 5s) at the top of 0004 and retry if it fails. The Postgres version is **unverified**, because no config in the repo states it.\n3. **Decide whether `GET /orders` should return notes, and make it explicit.** The plan only discusses `GET /:id`. `GET /` (`src/routes/orders.ts:26-27`) also uses `SELECT *`. It is unpaginated, and the repo's own comment says the web table renders the full list. Notes of up to 2000 chars would then ship in every list response. Either list explicit columns there, or accept the larger payload on purpose.\n\n## Risks\n1. **Test as written would fail or prove nothing** (see change 1). It would likely be fixed during execution, but it widens the scope of the approval you are giving.\n2. **Lock queueing on a 41M-row table** (change 2). The impact is a brief outage of the orders endpoints, not data loss. The down migration (`DROP COLUMN`) discards any notes entered after the up migration, and nothing warns about that.\n3. **Visibility of notes.** The task says \"Sales\" attaches the notes. Members can read their own orders (`orders.ts:36`). The plan stores the note on the shared `orders` row, so the order's owner will also see it. The plan doesn't say whether that is intended. This is a product question, not a code one.\n4. **Minor:** `notes` is not trimmed, and `\"\"` is accepted and stored as an empty string, not NULL. `POST /` already returns the row via `RETURNING *`, so the note appears in the 201 response with no extra code.\n\nVerified: `orders` has no `notes` column (0001, 0002). The `customer_id` migration (0002) is the precedent for an additive nullable column. `GET /:id` uses `SELECT *` (`orders.ts:33`). Nothing else writes to `orders` in a way that this change would affect (`payments.ts:15` is UPDATE-only).\n\n## Alternatives\nThe plan is already the smallest change. A separate `order_notes` table would avoid touching the hot table, but that is overkill for one optional field.\n\n## Validation\n- `npm test` with the revised test.\n- Before the migration, check `SELECT version()` and `SELECT count(*) FROM pg_stat_activity WHERE state='active' AND query ILIKE '%orders%' AND now()-query_start > interval '30s'`. Both are read-only.\n- After the migration, check that `\\d orders` shows `notes text` and that `GET /orders/:id` returns `notes: null` for old orders.\n\n## Decisions\n- **Risk 3:** Should the order's owner see the note? My pick: yes if the owner is the sales rep who created it. If notes are internal, they need an admin-only filter, which would be a plan change.\n\n## Next\nApprove the plan with changes 1–3 applied? yes/no",
+  "all_texts": [
+    "## Recommendation\n**APPROVE WITH CHANGES** · Risk: **MEDIUM** (additive nullable column on a ~41M-row `orders` table, plus a small API change) · Plan status: REVIEWED\n\nRequired changes:\n1. **Rewrite the test in step 3.** The existing mock in `tests/orders.test.ts:3-6` gives `withTransaction` a bare `client.query = vi.fn()`. That mock returns `undefined`, so `inserted.rows[0]` throws and the route fails before any assertion on the INSERT params. The test needs a `client.query` mock that returns `{rows:[{id:1}]}`, and it needs `reserveStock` mocked. The plan doesn't mention either. The 2001-char 400 case works with the existing mocks.\n2. **Run the migration with `SET lock_timeout`.** On PG11+ the `ADD COLUMN ... TEXT` with no default only changes metadata, so it is fast. It still takes an ACCESS EXCLUSIVE lock on `orders`. If a long reporting query or a payment-reconciliation query holds the table, the ALTER queues and blocks every order read and write behind it. Put a short `lock_timeout` (e.g. 5s) at the top of 0004 and retry if it fails. The Postgres version is **unverified**, because no config in the repo states it.\n3. **Decide whether `GET /orders` should return notes, and make it explicit.** The plan only discusses `GET /:id`. `GET /` (`src/routes/orders.ts:26-27`) also uses `SELECT *`. It is unpaginated, and the repo's own comment says the web table renders the full list. Notes of up to 2000 chars would then ship in every list response. Either list explicit columns there, or accept the larger payload on purpose.\n\n## Risks\n1. **Test as written would fail or prove nothing** (see change 1). It would likely be fixed during execution, but it widens the scope of the approval you are giving.\n2. **Lock queueing on a 41M-row table** (change 2). The impact is a brief outage of the orders endpoints, not data loss. The down migration (`DROP COLUMN`) discards any notes entered after the up migration, and nothing warns about that.\n3. **Visibility of notes.** The task says \"Sales\" attaches the notes. Members can read their own orders (`orders.ts:36`). The plan stores the note on the shared `orders` row, so the order's owner will also see it. The plan doesn't say whether that is intended. This is a product question, not a code one.\n4. **Minor:** `notes` is not trimmed, and `\"\"` is accepted and stored as an empty string, not NULL. `POST /` already returns the row via `RETURNING *`, so the note appears in the 201 response with no extra code.\n\nVerified: `orders` has no `notes` column (0001, 0002). The `customer_id` migration (0002) is the precedent for an additive nullable column. `GET /:id` uses `SELECT *` (`orders.ts:33`). Nothing else writes to `orders` in a way that this change would affect (`payments.ts:15` is UPDATE-only).\n\n## Alternatives\nThe plan is already the smallest change. A separate `order_notes` table would avoid touching the hot table, but that is overkill for one optional field.\n\n## Validation\n- `npm test` with the revised test.\n- Before the migration, check `SELECT version()` and `SELECT count(*) FROM pg_stat_activity WHERE state='active' AND query ILIKE '%orders%' AND now()-query_start > interval '30s'`. Both are read-only.\n- After the migration, check that `\\d orders` shows `notes text` and that `GET /orders/:id` returns `notes: null` for old orders.\n\n## Decisions\n- **Risk 3:** Should the order's owner see the note? My pick: yes if the owner is the sales rep who created it. If notes are internal, they need an admin-only filter, which would be a plan change.\n\n## Next\nApprove the plan with changes 1–3 applied? yes/no"
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r3-dev/d02-feature-order-notes/skill.claude.events.jsonl"
+}

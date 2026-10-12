@@ -1,0 +1,109 @@
+{
+  "scenario_id": "d07-webhook-idempotency",
+  "arm": "skill",
+  "prompt": "/senior-plan-review:senior-plan-review\n\nYou are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nINC-2217: the payment provider redelivers webhooks and we insert the same payment twice. Make POST /webhooks/payments idempotent.\n\n## Draft implementation plan\n1. In src/services/payments.ts, before inserting, run `SELECT 1 FROM payments WHERE provider_event_id = $1`; if a row exists, return early.\n2. Otherwise insert the payment and update the order status as today.\n3. Add a test: call recordPayment twice with the same event id against a mocked pool and assert only one INSERT.\n4. No migration needed.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": true,
+  "exit_code": 0,
+  "elapsed_s": 34.6,
+  "num_turns": 8,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 17968,
+    "cache_read_input_tokens": 52807,
+    "output_tokens": 3565,
+    "output_tokens_details": {
+      "thinking_tokens": 1047
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 17968,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2701,
+        "cache_read_input_tokens": 22335,
+        "cache_creation_input_tokens": 5699,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 5699
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.1180954,
+  "tool_uses": [
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "provider_event_id|payments|webhook",
+        "-i": true,
+        "output_mode": "content",
+        "glob": "!node_modules",
+        "head_limit": 80
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Glob",
+      "input": {
+        "pattern": "**/*.{ts,sql,json,md}"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d07-webhook-idempotency--skill--claude/src/services/payments.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d07-webhook-idempotency--skill--claude/src/routes/webhooks.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d07-webhook-idempotency--skill--claude/docs/ops-runbook.txt"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d07-webhook-idempotency--skill--claude/src/db/migrations/0001_init.sql"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d07-webhook-idempotency--skill--claude/src/db/migrations/0003_payments_received_idx.sql"
+      },
+      "kind": "read"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "## Recommendation\n**REVISE.** Risk tier: **HIGH** (concurrency/consistency fix on 7-year-retention financial data). The plan does not fix INC-2217 and adds a new failure mode. Required changes:\n1. Enforce uniqueness in the database. Add migration `0004` with `CREATE UNIQUE INDEX CONCURRENTLY` on `payments(provider_event_id)`. Step 4, \"no migration needed\", is wrong.\n2. Make the insert atomic with `INSERT ... ON CONFLICT (provider_event_id) DO NOTHING`. Drop the `SELECT 1` pre-check.\n3. Make the payment insert and the order update safe to retry. Run both in one transaction on a dedicated client, or run the order `UPDATE` even on conflict. The `UPDATE` to `paid` is already idempotent.\n4. Handle the existing duplicates before the index build (see Decisions).\n5. Test against real Postgres, with concurrent calls.\n\nPlan status: REVISION_REQUIRED\n\n## Risks\n1. **The check-then-insert race remains.** Production runs 3 replicas behind nginx (`docs/ops-runbook.txt`, verified). A redelivery after a timeout often overlaps the original request. Both requests can run the `SELECT`, see nothing, and both insert. `payments.provider_event_id` is `TEXT NOT NULL` with no unique constraint (`0001_init.sql:41`, verified). Duplicates keep occurring, only less often.\n2. **An early return strands orders as `pending`.** `recordPayment` runs the insert and the order update as two auto-commit queries, and the code comment says a failure between them leaves the order `pending` (`src/services/payments.ts:6-8`, verified). The route has no error handling (`webhooks.ts:30`). Suppose the insert succeeds and the update fails. The provider retries, the new pre-check finds the row and returns early, and the order never becomes `paid`. Today the retry at least reaches the `UPDATE`. This is a regression, and it is silent.\n3. **A unique index can't be built while duplicates exist.** Duplicates are confirmed in production (INC-2217). A failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves an INVALID index behind. `payments` has about 38M rows. A plain `CREATE INDEX` would block writes, so use `CONCURRENTLY` as `0003` does.\n4. **The planned test can't prove the fix.** A mocked pool asserting one `INSERT` only checks the sequential path. It can't catch the race in risk 1 or the partial failure in risk 2.\n\nMinor: the signature is checked over `JSON.stringify(req.body)`, not the raw bytes (`webhooks.ts:22`). This is out of scope, but worth a ticket.\n\n## Alternatives\n`ON CONFLICT DO NOTHING` plus a unique index is the smallest change that fully fixes this, and it is simpler than the pre-check. A pre-check would only make sense if a migration were impossible, and it isn't. Migrations run in CI before the rolling deploy (inferred: `0003` already uses `CONCURRENTLY`, so the runner handles it).\n\n## Impact\n- The index is built before deploy, so old replicas run against it for about 4 minutes during the rolling deploy.\n- A duplicate insert from old code now fails with a unique violation. The route returns 500 and the provider retries, so this is tolerable but noisy.\n- Finance's manual dedupe stops being needed for new rows.\n\n## Validation\n- Read-only first: `SELECT provider_event_id, count(*) FROM payments GROUP BY 1 HAVING count(*) > 1`.\n- Integration test against real Postgres: fire N concurrent deliveries of the same event and assert one row and `paid` status.\n- Test the failure path: if the order update fails after the insert, a redelivery still marks the order `paid`.\n- After deploy, watch for unique-violation 500s and for orders stuck in `pending` that have a payment row.\n\n## Decisions\n- **Existing duplicates (risk 3).** Payments are under 7-year tax retention and \"NEVER hard-delete\" (`docs/ops-runbook.txt`), so deleting the duplicate rows is not an option.\n  - (a) Use a partial unique index with a constant cutoff, `WHERE received_at >= '<deploy date>'`. This is my pick: it is non-destructive and leaves the old duplicates alone.\n  - (b) Add a nullable `superseded_by` column, flag the old duplicates, and build the index over non-flagged rows. This needs Finance to agree.\n- **Response to a duplicate delivery.** Return 200 so the provider stops retrying. I'd pick this, and it is an implementation detail.\n\n## Next\nRedraft with changes 1–5, using option (a) for the existing duplicates? yes/no",
+  "all_texts": [
+    "## Recommendation\n**REVISE.** Risk tier: **HIGH** (concurrency/consistency fix on 7-year-retention financial data). The plan does not fix INC-2217 and adds a new failure mode. Required changes:\n1. Enforce uniqueness in the database. Add migration `0004` with `CREATE UNIQUE INDEX CONCURRENTLY` on `payments(provider_event_id)`. Step 4, \"no migration needed\", is wrong.\n2. Make the insert atomic with `INSERT ... ON CONFLICT (provider_event_id) DO NOTHING`. Drop the `SELECT 1` pre-check.\n3. Make the payment insert and the order update safe to retry. Run both in one transaction on a dedicated client, or run the order `UPDATE` even on conflict. The `UPDATE` to `paid` is already idempotent.\n4. Handle the existing duplicates before the index build (see Decisions).\n5. Test against real Postgres, with concurrent calls.\n\nPlan status: REVISION_REQUIRED\n\n## Risks\n1. **The check-then-insert race remains.** Production runs 3 replicas behind nginx (`docs/ops-runbook.txt`, verified). A redelivery after a timeout often overlaps the original request. Both requests can run the `SELECT`, see nothing, and both insert. `payments.provider_event_id` is `TEXT NOT NULL` with no unique constraint (`0001_init.sql:41`, verified). Duplicates keep occurring, only less often.\n2. **An early return strands orders as `pending`.** `recordPayment` runs the insert and the order update as two auto-commit queries, and the code comment says a failure between them leaves the order `pending` (`src/services/payments.ts:6-8`, verified). The route has no error handling (`webhooks.ts:30`). Suppose the insert succeeds and the update fails. The provider retries, the new pre-check finds the row and returns early, and the order never becomes `paid`. Today the retry at least reaches the `UPDATE`. This is a regression, and it is silent.\n3. **A unique index can't be built while duplicates exist.** Duplicates are confirmed in production (INC-2217). A failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves an INVALID index behind. `payments` has about 38M rows. A plain `CREATE INDEX` would block writes, so use `CONCURRENTLY` as `0003` does.\n4. **The planned test can't prove the fix.** A mocked pool asserting one `INSERT` only checks the sequential path. It can't catch the race in risk 1 or the partial failure in risk 2.\n\nMinor: the signature is checked over `JSON.stringify(req.body)`, not the raw bytes (`webhooks.ts:22`). This is out of scope, but worth a ticket.\n\n## Alternatives\n`ON CONFLICT DO NOTHING` plus a unique index is the smallest change that fully fixes this, and it is simpler than the pre-check. A pre-check would only make sense if a migration were impossible, and it isn't. Migrations run in CI before the rolling deploy (inferred: `0003` already uses `CONCURRENTLY`, so the runner handles it).\n\n## Impact\n- The index is built before deploy, so old replicas run against it for about 4 minutes during the rolling deploy.\n- A duplicate insert from old code now fails with a unique violation. The route returns 500 and the provider retries, so this is tolerable but noisy.\n- Finance's manual dedupe stops being needed for new rows.\n\n## Validation\n- Read-only first: `SELECT provider_event_id, count(*) FROM payments GROUP BY 1 HAVING count(*) > 1`.\n- Integration test against real Postgres: fire N concurrent deliveries of the same event and assert one row and `paid` status.\n- Test the failure path: if the order update fails after the insert, a redelivery still marks the order `paid`.\n- After deploy, watch for unique-violation 500s and for orders stuck in `pending` that have a payment row.\n\n## Decisions\n- **Existing duplicates (risk 3).** Payments are under 7-year tax retention and \"NEVER hard-delete\" (`docs/ops-runbook.txt`), so deleting the duplicate rows is not an option.\n  - (a) Use a partial unique index with a constant cutoff, `WHERE received_at >= '<deploy date>'`. This is my pick: it is non-destructive and leaves the old duplicates alone.\n  - (b) Add a nullable `superseded_by` column, flag the old duplicates, and build the index over non-flagged rows. This needs Finance to agree.\n- **Response to a duplicate delivery.** Return 200 so the provider stops retrying. I'd pick this, and it is an implementation detail.\n\n## Next\nRedraft with changes 1–5, using option (a) for the existing duplicates? yes/no"
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r3-dev/d07-webhook-idempotency/skill.claude.events.jsonl"
+}

@@ -1,0 +1,116 @@
+{
+  "scenario_id": "d08-auth-refresh-tokens",
+  "arm": "baseline",
+  "prompt": "You are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nUsers get logged out every 15 minutes. Add refresh tokens with a 30-day lifetime.\n\n## Draft implementation plan\n1. src/middleware/auth.ts: add `signRefreshToken(user)` using the same JWT_SECRET with expiresIn '30d' and a claim `type: 'refresh'`.\n2. POST /auth/login returns `{ access_token, refresh_token }`.\n3. New POST /auth/refresh: verify the refresh token with JWT_SECRET, issue a new access token (the refresh token stays valid until it expires).\n4. web/src/api.ts: store refresh_token in localStorage next to the access token; on 401, call /auth/refresh and retry once.\n5. No schema change: refresh tokens are stateless JWTs.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": false,
+  "exit_code": 0,
+  "elapsed_s": 30.1,
+  "num_turns": 9,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 14448,
+    "cache_read_input_tokens": 66441,
+    "output_tokens": 2781,
+    "output_tokens_details": {
+      "thinking_tokens": 105
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 14448,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1508,
+        "cache_read_input_tokens": 23174,
+        "cache_creation_input_tokens": 1340,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1340
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.09890619999999999,
+  "tool_uses": [
+    {
+      "name": "Glob",
+      "input": {
+        "pattern": "**/*.{ts,tsx,sql,json,md}",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude/src/middleware/auth.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude/src/routes/auth.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude/web/src/api.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude/src/config.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude/src/db/migrations/0001_init.sql"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude/src/server.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "setToken|sessionStorage|localStorage|signAccessToken|JWT_SECRET|password",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d08-auth-refresh-tokens--baseline--claude",
+        "output_mode": "content",
+        "glob": "!node_modules"
+      },
+      "kind": "read"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "**Recommendation: ask for changes. Don't approve as written.** The approach is sound, but the plan has one security-critical bug and several gaps.\n\n**Blocking problems**\n\n1. **A refresh token works as an access token.** `requireAuth` (`src/middleware/auth.ts:26-42`) verifies with the same secret and HS256, and it never checks a `type` claim. The plan signs refresh tokens with the same `JWT_SECRET` and the same `sub`, `email` and `role` claims. A stolen 30-day refresh token would therefore authenticate every `/orders` and `/customers` call for 30 days, which defeats the 15-minute access lifetime. Fixes:\n   - `requireAuth` must reject tokens with `type === 'refresh'`.\n   - `/auth/refresh` must require `type === 'refresh'`.\n   - Better still, give refresh tokens a separate secret (a new env var in `src/config.ts`, `.env.example` and `docker-compose.yml`) or a distinct `aud`.\n\n2. **There is no revocation, and the plan doesn't mention it.** Stateless 30-day tokens can't be revoked at logout, on a password change or on a compromise. The only kill switch is rotating `JWT_SECRET`, which per `docs/ops-runbook.txt:40` invalidates every session. Step 3 also keeps the refresh token valid until it expires, so there is no rotation and no way to detect reuse. For a 30-day credential, I'd want a `refresh_tokens` table. It would store a hashed `jti`, `user_id`, `expires_at` and `revoked_at`, and `/auth/refresh` would rotate tokens. That means step 5 (\"no schema change\") should be dropped. If you accept stateless tokens, you should do so knowingly, and the plan should at least add a logout path.\n\n3. **`/auth/refresh` would mint tokens from stale claims.** The new access token would copy `role` and `email` from the refresh JWT. A demoted admin, or a deleted user, would keep their old role for up to 30 days. The endpoint should reload the user from the `users` table by `sub` and sign from that row.\n\n**Frontend gaps (step 4)**\n\n4. **The storage description is wrong.** The access token lives in `sessionStorage` (`web/src/api.ts:1-9`), not `localStorage`. Putting a 30-day token in `localStorage` makes it readable by any XSS and persistent across tabs. An httpOnly, `SameSite` cookie scoped to `/auth` is safer, but it would need `cookie-parser` and CORS or CSRF consideration. If you keep Web Storage, say so explicitly and accept the risk.\n\n5. **The 401 handling needs a rewrite, not an addition.** Today a 401 clears the token and redirects to `/login` immediately (`api.ts:21-24`). The plan doesn't say how to:\n   - make the refresh-and-retry-once logic avoid looping when `/auth/refresh` itself returns 401;\n   - coalesce concurrent 401s into a single refresh call (matters most with rotation, because parallel refreshes would invalidate each other);\n   - clear both tokens on final failure.\n\n   The login page's `setToken` caller also needs updating, but I couldn't find that code in `web/src`. Check where login is handled.\n\n**Smaller items**\n\n- `/auth/login` currently returns `expires_in: 900`. Keep that, and add `refresh_expires_in`.\n- `/auth/refresh` should validate its body with zod like `/login` does, and return the same `{ error: ... }` shapes.\n- Add rate limiting to `/auth/refresh` and `/auth/login`.\n- There are no auth tests today (`tests/` only covers orders and inventory). The plan should add tests for refresh success, expired token, a refresh token used as an access token, and a wrong `type`.\n- If you add a table, `src/jobs/cleanup.ts` should purge expired rows.\n- Sharing `JWT_SECRET` also means the runbook's rotation note needs updating.\n\n**What's fine**\n\n- A 30-day lifetime and a `type` claim are reasonable.\n- Retrying once after a refresh is the right client behavior.\n- The change is small and fits the existing structure.\n\n**Suggested revision:** use a separate secret or `aud`, enforce `type` in both directions, keep a `refresh_tokens` table with rotation and a logout endpoint, reload the user on refresh, and specify the frontend storage choice and the single-flight refresh logic.",
+  "all_texts": [
+    "**Recommendation: ask for changes. Don't approve as written.** The approach is sound, but the plan has one security-critical bug and several gaps.\n\n**Blocking problems**\n\n1. **A refresh token works as an access token.** `requireAuth` (`src/middleware/auth.ts:26-42`) verifies with the same secret and HS256, and it never checks a `type` claim. The plan signs refresh tokens with the same `JWT_SECRET` and the same `sub`, `email` and `role` claims. A stolen 30-day refresh token would therefore authenticate every `/orders` and `/customers` call for 30 days, which defeats the 15-minute access lifetime. Fixes:\n   - `requireAuth` must reject tokens with `type === 'refresh'`.\n   - `/auth/refresh` must require `type === 'refresh'`.\n   - Better still, give refresh tokens a separate secret (a new env var in `src/config.ts`, `.env.example` and `docker-compose.yml`) or a distinct `aud`.\n\n2. **There is no revocation, and the plan doesn't mention it.** Stateless 30-day tokens can't be revoked at logout, on a password change or on a compromise. The only kill switch is rotating `JWT_SECRET`, which per `docs/ops-runbook.txt:40` invalidates every session. Step 3 also keeps the refresh token valid until it expires, so there is no rotation and no way to detect reuse. For a 30-day credential, I'd want a `refresh_tokens` table. It would store a hashed `jti`, `user_id`, `expires_at` and `revoked_at`, and `/auth/refresh` would rotate tokens. That means step 5 (\"no schema change\") should be dropped. If you accept stateless tokens, you should do so knowingly, and the plan should at least add a logout path.\n\n3. **`/auth/refresh` would mint tokens from stale claims.** The new access token would copy `role` and `email` from the refresh JWT. A demoted admin, or a deleted user, would keep their old role for up to 30 days. The endpoint should reload the user from the `users` table by `sub` and sign from that row.\n\n**Frontend gaps (step 4)**\n\n4. **The storage description is wrong.** The access token lives in `sessionStorage` (`web/src/api.ts:1-9`), not `localStorage`. Putting a 30-day token in `localStorage` makes it readable by any XSS and persistent across tabs. An httpOnly, `SameSite` cookie scoped to `/auth` is safer, but it would need `cookie-parser` and CORS or CSRF consideration. If you keep Web Storage, say so explicitly and accept the risk.\n\n5. **The 401 handling needs a rewrite, not an addition.** Today a 401 clears the token and redirects to `/login` immediately (`api.ts:21-24`). The plan doesn't say how to:\n   - make the refresh-and-retry-once logic avoid looping when `/auth/refresh` itself returns 401;\n   - coalesce concurrent 401s into a single refresh call (matters most with rotation, because parallel refreshes would invalidate each other);\n   - clear both tokens on final failure.\n\n   The login page's `setToken` caller also needs updating, but I couldn't find that code in `web/src`. Check where login is handled.\n\n**Smaller items**\n\n- `/auth/login` currently returns `expires_in: 900`. Keep that, and add `refresh_expires_in`.\n- `/auth/refresh` should validate its body with zod like `/login` does, and return the same `{ error: ... }` shapes.\n- Add rate limiting to `/auth/refresh` and `/auth/login`.\n- There are no auth tests today (`tests/` only covers orders and inventory). The plan should add tests for refresh success, expired token, a refresh token used as an access token, and a wrong `type`.\n- If you add a table, `src/jobs/cleanup.ts` should purge expired rows.\n- Sharing `JWT_SECRET` also means the runbook's rotation note needs updating.\n\n**What's fine**\n\n- A 30-day lifetime and a `type` claim are reasonable.\n- Retrying once after a refresh is the right client behavior.\n- The change is small and fits the existing structure.\n\n**Suggested revision:** use a separate secret or `aud`, enforce `type` in both directions, keep a `refresh_tokens` table with rotation and a logout endpoint, reload the user on refresh, and specify the frontend storage choice and the single-flight refresh logic."
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r1-dev/d08-auth-refresh-tokens/baseline.claude.events.jsonl"
+}

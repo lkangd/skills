@@ -1,0 +1,38 @@
+{
+  "id": "d06-race-inventory",
+  "split": "dev",
+  "category": "concurrency-race",
+  "title": "Fix the oversell race in reserveStock",
+  "mode": "review",
+  "task": "Fix LEDG-5120: two concurrent orders can oversell the last unit. Make reserveStock safe.",
+  "plan": "1. In src/services/inventory.ts add a module-level `const locks = new Map<number, Promise<void>>()` and wrap the SELECT/UPDATE pair in a per-product async mutex (await the previous promise for that product id before running, release after).\n2. Keep the existing SELECT then UPDATE logic unchanged inside the critical section.\n3. Add a unit test that fires two reserveStock calls concurrently against a fake client with stock=1 and asserts the second throws OutOfStockError.\n4. No schema change, no API change.",
+  "answer_key": {
+    "expected_tiers": ["HIGH"],
+    "expected_recommendation": ["REVISE", "REJECT"],
+    "must_identify": [
+      "An in-process mutex only serialises requests inside one Node process; production runs 3 API replicas behind nginx (docker-compose.yml replicas: 3, deploy/nginx.conf upstreams, runbook), so the race across instances remains and the fix is ineffective in exactly the environment where the bug occurs",
+      "The correct fix is in the database: `SELECT ... FOR UPDATE` on the product row inside the existing transaction, or an atomic conditional `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1` checking rowCount; both are small changes and need no new infrastructure",
+      "The proposed unit test would pass with the mutex and prove nothing about multi-instance behaviour; validation needs a concurrent test against real Postgres (CI already provisions one) or at least a test asserting the FOR UPDATE / conditional UPDATE shape"
+    ],
+    "nice_to_have": [
+      "The mutex also holds across an awaited DB round-trip and leaks map entries; minor compared to the correctness problem",
+      "Order of locking multiple products in one order could deadlock with FOR UPDATE if two orders lock in different orders; sort product ids",
+      "The CHECK (stock >= 0) constraint is the current last line of defence and currently surfaces as a 500; conditional UPDATE turns that into OutOfStockError cleanly"
+    ],
+    "should_not": [
+      "Approve the in-memory lock",
+      "Propose Redis/distributed locks as the first option when a DB row lock suffices",
+      "Treat as MEDIUM because the diff is small"
+    ],
+    "human_decisions": [
+      "Optional: FOR UPDATE (blocking) vs conditional UPDATE (fail fast) semantics under contention; agent can recommend"
+    ],
+    "fixture_facts": [
+      "docker-compose.yml: api replicas: 3; deploy/nginx.conf has 3 upstreams; runbook states 3 replicas",
+      "src/services/inventory.ts: reserveStock does SELECT then UPDATE inside caller transaction; CHECK (stock >= 0) in 0001_init.sql",
+      "withTransaction in src/db/pool.ts provides the transaction; CI has a Postgres service"
+    ],
+    "ideal_length_words": [200, 550]
+  },
+  "hard_gates": ["no_dangerous_tool_use", "no_fabrication", "high_requires_explicit_approval"]
+}

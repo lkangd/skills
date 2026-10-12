@@ -1,0 +1,54 @@
+{
+  "model": "sonnet",
+  "cases": [
+    {
+      "id": "t1-should",
+      "expected_trigger": true,
+      "triggered": true,
+      "correct": true,
+      "elapsed_s": 33.1,
+      "final_text_head": "## Recommendation\n**REVISE.** Risk tier: HIGH (concurrency and consistency fix). Plan status: REVISION_REQUIRED.\n\nA per-product in-memory mutex doesn't fix LEDG-5120. Replace it with a database-level fix:\n1. In `reserveStock`, drop the SELECT-then-UPDATE and use one atomic statement: `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING id, unit_price_cents`. If it return"
+    },
+    {
+      "id": "t2-should",
+      "expected_trigger": true,
+      "triggered": true,
+      "correct": true,
+      "elapsed_s": 35.2,
+      "final_text_head": "## Recommendation\n**REVISE.** Risk tier: **HIGH** (new auth credential, long-lived, and issued by a login endpoint that has no application-level rate limit). I'd approve a version with changes 1–5 below.\n\nThe plan is a draft of mine, built from your one-line request. It has four parts: a 30-day stateless refresh JWT, a new `POST /auth/refresh`, a login response that returns it, and storage in `loc"
+    },
+    {
+      "id": "t3-should",
+      "expected_trigger": true,
+      "triggered": true,
+      "correct": true,
+      "elapsed_s": 21.8,
+      "final_text_head": "## Recommendation\n**REVISE (do not approve as one release).** Risk tier: **CRITICAL**. The dangerous step is dropping `customers.full_name`.\n\nNothing executes until you approve `DROP COLUMN customers.full_name in production` by name in a separate reply. That applies to the revised plan too.\n\nRequired changes:\n1. Split into at least two releases: expand (add `first_name`, `last_name`, backfill, dua"
+    },
+    {
+      "id": "t4-should-not",
+      "expected_trigger": false,
+      "triggered": false,
+      "correct": true,
+      "elapsed_s": 11.7,
+      "final_text_head": "`verifySignature` doesn't use a regex. It's an HMAC check. It returns `false` right away if the signature header is missing. Otherwise it computes an HMAC-SHA256 of the raw request body, keyed with `env.PAYMENT_WEBHOOK_SECRET`, and hex-encodes it. It then compares that value with the signature the caller sent. The comparison first checks that the two buffers have the same length, because `timingSa"
+    },
+    {
+      "id": "t5-should-not",
+      "expected_trigger": false,
+      "triggered": false,
+      "correct": true,
+      "elapsed_s": 12.9,
+      "final_text_head": "Scripts in `package.json` (project `ledgerly-api`):\n\n| Script | Runs | Purpose |\n|---|---|---|\n| `dev` | `tsx watch src/server.ts` | Starts the server and restarts it when files change. |\n| `build` | `tsc -p tsconfig.json` | Compiles TypeScript using `tsconfig.json`. |\n| `start` | `node dist/server.js` | Runs the compiled server. Run `build` first. |\n| `test` | `vitest run` | Runs the test suite o"
+    },
+    {
+      "id": "t6-should-not",
+      "expected_trigger": false,
+      "triggered": false,
+      "correct": true,
+      "elapsed_s": 12.7,
+      "final_text_head": "No objections to the change itself, but I couldn't confirm it. `web/src/components/StatusBadge.tsx:29` still has `fontWeight: 600`, so the edit isn't saved in this directory. The directory also isn't a git repo, so I have no diff to look at. I only have your description.\n\nOn style, `700` is fine:\n- It's a valid numeric weight, and it matches the file's existing style of unquoted numbers.\n- That is"
+    }
+  ],
+  "accuracy": "6/6"
+}

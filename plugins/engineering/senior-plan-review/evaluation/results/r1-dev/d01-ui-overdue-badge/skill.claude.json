@@ -1,0 +1,87 @@
+{
+  "scenario_id": "d01-ui-overdue-badge",
+  "arm": "skill",
+  "prompt": "/senior-plan-review:senior-plan-review\n\nYou are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nThe 'Overdue' badge in the orders table is yellow and support keeps missing it in screenshots. Make it red, and make sure screen readers announce the status.\n\n## Draft implementation plan\n1. In web/src/components/StatusBadge.tsx change COLORS.overdue to { bg: \"#fee2e2\", fg: \"#991b1b\" }.\n2. Add role=\"status\" and aria-label={`Order status: ${LABELS[status]}`} to the <span>.\n3. No API or data changes. Run `npm run lint`; there are no component tests for StatusBadge today, so verify visually in the orders table.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": true,
+  "exit_code": 0,
+  "elapsed_s": 32.0,
+  "num_turns": 5,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 13813,
+    "cache_read_input_tokens": 52813,
+    "output_tokens": 1963,
+    "output_tokens_details": {
+      "thinking_tokens": 310
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 13813,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1014,
+        "cache_read_input_tokens": 22929,
+        "cache_creation_input_tokens": 950,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 950
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.08545660000000001,
+  "tool_uses": [
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d01-ui-overdue-badge--skill--claude/web/src/components/StatusBadge.tsx"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "StatusBadge|role=\"status\"|aria-live",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d01-ui-overdue-badge--skill--claude",
+        "output_mode": "content",
+        "glob": "!node_modules"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Bash",
+      "input": {
+        "command": "cat package.json web/package.json 2>/dev/null | grep -n -E '\"(lint|test)\"'; ls; ls web"
+      },
+      "kind": "bash"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r1-dev-3meuiqfw/d01-ui-overdue-badge--skill--claude/web/src/components/OrderTable.tsx"
+      },
+      "kind": "read"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "## Recommendation: APPROVE WITH CHANGES (Risk: LOW)\n\n**Intent:** Make the Overdue badge red so it's visible in screenshots, and make sure screen readers announce the status.\n\n**Approach:** Step 1 (red colors) is correct. Step 2 (`role=\"status\"` plus `aria-label`) is the wrong way to do the accessibility part, so I'd change it.\n\n**Verified against the repo:**\n- `web/src/components/StatusBadge.tsx:10` has `overdue: { bg: \"#fef9c3\", fg: \"#854d0e\" }`, so that is the yellow to replace. `LABELS` exists, and the `<span>` is at line 31. (verified)\n- `StatusBadge` is used in one place, `OrderTable.tsx:30`, inside a `<td>` in every row. (verified)\n- `npm run lint` exists and covers `web/src`. There is no `StatusBadge` test file. (verified)\n- `#991b1b` on `#fee2e2` is roughly 7:1 contrast, which is fine. (inferred)\n\n**Problems with step 2:**\n1. **The badge is already readable.** It renders the text \"Overdue\", so screen readers already read it. Adding ARIA doesn't fix a gap that exists. If the real complaint is that the status isn't announced, I can't see from the code why that would be.\n2. **`role=\"status\"` is a live region.** Every row's badge would become one (all statuses, not only Overdue). A table with 50 orders gets 50 live regions. Any re-render or refetch that changes a badge can trigger announcements, which is noisy. Live regions are meant for dynamic updates, not static cell content.\n3. **`aria-label` replaces the visible text.** The screen-reader text becomes \"Order status: Overdue\" while the visible text is \"Overdue\". This is mostly harmless, but it's redundant in a column whose header is already \"Status\". It also creates a label that doesn't match the visible text, which can trip voice-control users.\n\n**Suggested change to step 2:** Drop `role` and `aria-label`. Keep the badge as plain text, which already works. If you want explicit confirmation, test it with VoiceOver on the orders table. If the status needs extra emphasis for assistive tech, add a leading icon or \"!\" marked `aria-hidden`. That also fixes the color-only cue for color-blind users, which is the more genuine accessibility gap here.\n\n**Validation:**\n- Run `npm run lint` and check the badge in the orders table, as the plan says.\n- Add a small test for `StatusBadge` only if the repo already has a web test setup. `package.json` has `vitest`, but I didn't confirm it covers `web/`, so the plan's \"no tests\" is not a blocker.\n- Do a quick VoiceOver pass on one row.\n\n**Decision for you:** Do you want the ARIA attributes anyway, for a requirement I can't see? If so, use `aria-label` or visually hidden text without `role=\"status\"`.\n\nPlan status: REVIEWED (nothing was modified or run)",
+  "all_texts": [
+    "## Recommendation: APPROVE WITH CHANGES (Risk: LOW)\n\n**Intent:** Make the Overdue badge red so it's visible in screenshots, and make sure screen readers announce the status.\n\n**Approach:** Step 1 (red colors) is correct. Step 2 (`role=\"status\"` plus `aria-label`) is the wrong way to do the accessibility part, so I'd change it.\n\n**Verified against the repo:**\n- `web/src/components/StatusBadge.tsx:10` has `overdue: { bg: \"#fef9c3\", fg: \"#854d0e\" }`, so that is the yellow to replace. `LABELS` exists, and the `<span>` is at line 31. (verified)\n- `StatusBadge` is used in one place, `OrderTable.tsx:30`, inside a `<td>` in every row. (verified)\n- `npm run lint` exists and covers `web/src`. There is no `StatusBadge` test file. (verified)\n- `#991b1b` on `#fee2e2` is roughly 7:1 contrast, which is fine. (inferred)\n\n**Problems with step 2:**\n1. **The badge is already readable.** It renders the text \"Overdue\", so screen readers already read it. Adding ARIA doesn't fix a gap that exists. If the real complaint is that the status isn't announced, I can't see from the code why that would be.\n2. **`role=\"status\"` is a live region.** Every row's badge would become one (all statuses, not only Overdue). A table with 50 orders gets 50 live regions. Any re-render or refetch that changes a badge can trigger announcements, which is noisy. Live regions are meant for dynamic updates, not static cell content.\n3. **`aria-label` replaces the visible text.** The screen-reader text becomes \"Order status: Overdue\" while the visible text is \"Overdue\". This is mostly harmless, but it's redundant in a column whose header is already \"Status\". It also creates a label that doesn't match the visible text, which can trip voice-control users.\n\n**Suggested change to step 2:** Drop `role` and `aria-label`. Keep the badge as plain text, which already works. If you want explicit confirmation, test it with VoiceOver on the orders table. If the status needs extra emphasis for assistive tech, add a leading icon or \"!\" marked `aria-hidden`. That also fixes the color-only cue for color-blind users, which is the more genuine accessibility gap here.\n\n**Validation:**\n- Run `npm run lint` and check the badge in the orders table, as the plan says.\n- Add a small test for `StatusBadge` only if the repo already has a web test setup. `package.json` has `vitest`, but I didn't confirm it covers `web/`, so the plan's \"no tests\" is not a blocker.\n- Do a quick VoiceOver pass on one row.\n\n**Decision for you:** Do you want the ARIA attributes anyway, for a requirement I can't see? If so, use `aria-label` or visually hidden text without `role=\"status\"`.\n\nPlan status: REVIEWED (nothing was modified or run)"
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r1-dev/d01-ui-overdue-badge/skill.claude.events.jsonl"
+}

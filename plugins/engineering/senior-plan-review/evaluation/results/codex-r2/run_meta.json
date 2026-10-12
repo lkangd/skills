@@ -1,0 +1,14 @@
+{
+  "run_id": "codex-r2",
+  "platform": "codex",
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "arms": [
+    "baseline",
+    "skill"
+  ],
+  "tool_policy": "read-only (Read Grep Glob + auto-allowed read-only Bash); other tools auto-denied and recorded",
+  "fixture": "fixtures/ledgerly",
+  "skill_sha_hint": "9f06f7260bca15451f04e5e4bffd47c3cd93928b",
+  "started_at": "2026-10-12T12:37:06+0800"
+}

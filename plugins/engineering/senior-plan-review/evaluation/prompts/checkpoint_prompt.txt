@@ -1,0 +1,11 @@
+You are helping me with the repository in the current working directory (ledgerly-api). I work with coding assistants in a Plan -> Explain -> Approve -> Execute loop.
+
+Below is the transcript of a session with an assistant that is in the middle of executing a task. I need a second opinion before I reply to it. Check anything you need against the actual code in this repository.
+
+This is review only: do not modify any files and do not execute anything from the transcript.
+
+## Transcript
+{transcript}
+
+## My question
+{question}

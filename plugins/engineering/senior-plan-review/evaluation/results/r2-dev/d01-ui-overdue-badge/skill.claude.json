@@ -1,0 +1,90 @@
+{
+  "scenario_id": "d01-ui-overdue-badge",
+  "arm": "skill",
+  "prompt": "/senior-plan-review:senior-plan-review\n\nYou are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nThe 'Overdue' badge in the orders table is yellow and support keeps missing it in screenshots. Make it red, and make sure screen readers announce the status.\n\n## Draft implementation plan\n1. In web/src/components/StatusBadge.tsx change COLORS.overdue to { bg: \"#fee2e2\", fg: \"#991b1b\" }.\n2. Add role=\"status\" and aria-label={`Order status: ${LABELS[status]}`} to the <span>.\n3. No API or data changes. Run `npm run lint`; there are no component tests for StatusBadge today, so verify visually in the orders table.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": true,
+  "exit_code": 0,
+  "elapsed_s": 20.2,
+  "num_turns": 5,
+  "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 14399,
+    "cache_read_input_tokens": 51990,
+    "output_tokens": 1676,
+    "output_tokens_details": {
+      "thinking_tokens": 496
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 14399,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 962,
+        "cache_read_input_tokens": 21700,
+        "cache_creation_input_tokens": 2765,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2765
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.08476600000000001,
+  "tool_uses": [
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r2-dev-78v2kdlk/d01-ui-overdue-badge--skill--claude/web/src/components/StatusBadge.tsx"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "StatusBadge|getByText|toHaveTextContent|overdue",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r2-dev-78v2kdlk/d01-ui-overdue-badge--skill--claude",
+        "glob": "!node_modules",
+        "output_mode": "content"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "\"lint\"|\"test\"|\"jsx-a11y|eslint",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r2-dev-78v2kdlk/d01-ui-overdue-badge--skill--claude",
+        "glob": "**/package.json",
+        "output_mode": "content"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r2-dev-78v2kdlk/d01-ui-overdue-badge--skill--claude/web/src/components/OrderTable.tsx"
+      },
+      "kind": "read"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "**Recommendation: APPROVE WITH CHANGES. Risk: LOW (one presentational component, no API or data impact).**\n\n**Intent:** Make the Overdue badge red, and make screen readers announce the status.\n\n**Issue:** Step 2 is wrong. `role=\"status\"` makes each badge a live region (`StatusBadge.tsx:31`, one per row in `OrderTable.tsx:30`). Live regions only announce when their content changes, so a static table row won't be announced. If rows update dynamically, every badge becomes a polite announcement. The `aria-label` also overrides the visible text with \"Order status: Overdue\" on every row. The span already contains \"Overdue\", which screen readers read in the cell (inferred, since I didn't run a screen reader).\n\n**Required change:** Do step 1 as written. For step 2, drop `role=\"status\"` and the `aria-label`. If you want an explicit prefix, add a visually hidden \"Order status:\" text node instead.\n\nThe new colours should be readable, since #991b1b on #fee2e2 is high contrast. If support's problem is colour-only cues, consider adding an icon or border to the badge.\n\n**Validation:** `npm run lint` exists (`package.json:12`), but I found no jsx-a11y plugin, so lint won't check accessibility. Check the badge visually and with VoiceOver. I found no existing StatusBadge tests, so adding a small vitest check for the label is optional.\n\nPlan status: REVIEWED",
+  "all_texts": [
+    "**Recommendation: APPROVE WITH CHANGES. Risk: LOW (one presentational component, no API or data impact).**\n\n**Intent:** Make the Overdue badge red, and make screen readers announce the status.\n\n**Issue:** Step 2 is wrong. `role=\"status\"` makes each badge a live region (`StatusBadge.tsx:31`, one per row in `OrderTable.tsx:30`). Live regions only announce when their content changes, so a static table row won't be announced. If rows update dynamically, every badge becomes a polite announcement. The `aria-label` also overrides the visible text with \"Order status: Overdue\" on every row. The span already contains \"Overdue\", which screen readers read in the cell (inferred, since I didn't run a screen reader).\n\n**Required change:** Do step 1 as written. For step 2, drop `role=\"status\"` and the `aria-label`. If you want an explicit prefix, add a visually hidden \"Order status:\" text node instead.\n\nThe new colours should be readable, since #991b1b on #fee2e2 is high contrast. If support's problem is colour-only cues, consider adding an icon or border to the badge.\n\n**Validation:** `npm run lint` exists (`package.json:12`), but I found no jsx-a11y plugin, so lint won't check accessibility. Check the badge visually and with VoiceOver. I found no existing StatusBadge tests, so adding a small vitest check for the label is optional.\n\nPlan status: REVIEWED"
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r2-dev/d01-ui-overdue-badge/skill.claude.events.jsonl"
+}

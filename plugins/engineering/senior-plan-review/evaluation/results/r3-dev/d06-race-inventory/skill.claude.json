@@ -1,0 +1,115 @@
+{
+  "scenario_id": "d06-race-inventory",
+  "arm": "skill",
+  "prompt": "/senior-plan-review:senior-plan-review\n\nYou are helping me with the repository in the current working directory (ledgerly-api). I work with you in a Plan -> Explain -> Approve -> Execute loop: you plan, I approve, then you execute.\n\nBelow is a task I gave earlier and the draft implementation plan that was produced for it. Before I decide whether to approve it, review the plan for me. Check it against the actual code in this repository. I want to know whether to approve it, ask for changes, or reject it.\n\nThis is review only: do not modify any files and do not execute anything from the plan.\n\n## Task\nFix LEDG-5120: two concurrent orders can oversell the last unit. Make reserveStock safe.\n\n## Draft implementation plan\n1. In src/services/inventory.ts add a module-level `const locks = new Map<number, Promise<void>>()` and wrap the SELECT/UPDATE pair in a per-product async mutex (await the previous promise for that product id before running, release after).\n2. Keep the existing SELECT then UPDATE logic unchanged inside the critical section.\n3. Add a unit test that fires two reserveStock calls concurrently against a fake client with stock=1 and asserts the second throws OutOfStockError.\n4. No schema change, no API change.\n",
+  "error": null,
+  "platform": "claude",
+  "model": "claude-sonnet-5-5",
+  "skill_loaded": true,
+  "exit_code": 0,
+  "elapsed_s": 27.7,
+  "num_turns": 9,
+  "usage": {
+    "input_tokens": 8,
+    "cache_creation_input_tokens": 18218,
+    "cache_read_input_tokens": 79300,
+    "output_tokens": 2351,
+    "output_tokens_details": {
+      "thinking_tokens": 52
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 18218,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 1362,
+        "cache_read_input_tokens": 27164,
+        "cache_creation_input_tokens": 1120,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 1120
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+  },
+  "cost_usd_list_price": 0.112258,
+  "tool_uses": [
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "reserveStock|OutOfStockError",
+        "output_mode": "content"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Glob",
+      "input": {
+        "pattern": "**/*.{ts,json,sql,md,yml,yaml}"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d06-race-inventory--skill--claude/src/services/inventory.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d06-race-inventory--skill--claude/src/routes/orders.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d06-race-inventory--skill--claude/docker-compose.yml"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d06-race-inventory--skill--claude/tests/inventory.test.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Read",
+      "input": {
+        "file_path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d06-race-inventory--skill--claude/src/db/pool.ts"
+      },
+      "kind": "read"
+    },
+    {
+      "name": "Grep",
+      "input": {
+        "pattern": "products|CHECK",
+        "path": "/private/var/folders/nh/5vhmfmd556j33t3g996v6c080000gn/T/spr-eval-r3-dev-11kimikl/d06-race-inventory--skill--claude/src/db/migrations",
+        "output_mode": "content"
+      },
+      "kind": "read"
+    }
+  ],
+  "permission_denials": [],
+  "final_text": "## Recommendation\n**REJECT, then redraft.** Risk tier: **HIGH** (concurrency and consistency fix). Plan status: REJECTED.\n\nThe in-process mutex does not fix the bug in production. Redraft with these changes:\n1. Drop the `Map` mutex.\n2. Make the check-and-decrement atomic in Postgres. The preferred form is a single statement: `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING id, unit_price_cents`.\n3. If that returns 0 rows, run a follow-up SELECT to tell \"not found\" from \"out of stock\". Then throw `OutOfStockError` with the real stock value. The current error carries `available`.\n4. Replace the test (see Validation).\n\n## Risks\n1. **The lock is per process and the API runs 3 replicas** (verified: `docker-compose.yml` has `replicas: 3` and says coordination \"has to live in Postgres, not in process memory\"). Two orders for the last unit that land on different replicas still both pass the SELECT. Staging shows the same failure the ticket describes.\n2. **The lock is released before COMMIT, so it doesn't work even in one process.** `reserveStock` runs inside the caller's transaction (verified: `src/routes/orders.ts:49-54`, `withTransaction` in `src/db/pool.ts`). The mutex frees when the function returns, but the UPDATE is not visible to other transactions until COMMIT, which happens later. The next order then takes the lock and reads the old stock, so the race remains. Holding the lock until COMMIT would need changes to `withTransaction`, which the plan doesn't include.\n3. **A leaked lock would block orders.** An error path that fails to release the lock hangs every later order for that product. The `Map` is also never cleaned up. The in-process lock also adds deadlock risk when an order has several items.\n4. **The proposed test would pass while production stays broken.** A fake client with in-process promises can't model separate transactions, Postgres row visibility, or multiple replicas. It would show green for the same race you are trying to fix.\n5. **Minor:**\n   - The current behaviour, where the second UPDATE hits `CHECK (stock >= 0)` (verified: `0001_init.sql:14`) and returns a 500, is the safety net. Keep it as a backstop.\n   - \"No API change\" is not quite accurate. `orders.ts` has no handler that maps `OutOfStockError` to a response, so it will still return a 500. Mapping it to 409 is a small, reasonable addition, but it is an API behaviour change, so confirm it.\n\n## Alternatives\n- **Recommended: the atomic conditional UPDATE** described above.\n  - It takes a row lock and re-checks `stock >= $1` against the latest committed row.\n  - It works across replicas.\n  - It needs no schema change.\n  - It is smaller than the plan.\n- **Alternative: `SELECT ... FOR UPDATE`** before the existing check. This keeps the current structure but adds one more round trip. Consider ordering items by `product_id` so multi-item orders can't deadlock.\n\n## Impact\nNo migration. Deploying it needs no ordering, and old and new replicas can run side by side during a rollout.\n\n## Validation\n- Run an integration test against real Postgres (docker-compose `db`). Open two connections with `BEGIN` and stock=1. Have both call `reserveStock` and commit. Exactly one must succeed and the other must throw `OutOfStockError`.\n- Keep the existing unit tests. `tests/inventory.test.ts:21` asserts the query order, so update it for the new SQL.\n- Rollback trigger: any `CHECK` violation or unexpected 5xx on `POST /orders` after deploy.\n\n## Decisions\n- Should `OutOfStockError` map to a 409 response? My pick is yes, as part of this fix.\n\n## Next\nRedraft with changes 1–4? yes/no\n\nPlan status: REJECTED (REVISION_REQUIRED). Nothing has been modified or executed.",
+  "all_texts": [
+    "## Recommendation\n**REJECT, then redraft.** Risk tier: **HIGH** (concurrency and consistency fix). Plan status: REJECTED.\n\nThe in-process mutex does not fix the bug in production. Redraft with these changes:\n1. Drop the `Map` mutex.\n2. Make the check-and-decrement atomic in Postgres. The preferred form is a single statement: `UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING id, unit_price_cents`.\n3. If that returns 0 rows, run a follow-up SELECT to tell \"not found\" from \"out of stock\". Then throw `OutOfStockError` with the real stock value. The current error carries `available`.\n4. Replace the test (see Validation).\n\n## Risks\n1. **The lock is per process and the API runs 3 replicas** (verified: `docker-compose.yml` has `replicas: 3` and says coordination \"has to live in Postgres, not in process memory\"). Two orders for the last unit that land on different replicas still both pass the SELECT. Staging shows the same failure the ticket describes.\n2. **The lock is released before COMMIT, so it doesn't work even in one process.** `reserveStock` runs inside the caller's transaction (verified: `src/routes/orders.ts:49-54`, `withTransaction` in `src/db/pool.ts`). The mutex frees when the function returns, but the UPDATE is not visible to other transactions until COMMIT, which happens later. The next order then takes the lock and reads the old stock, so the race remains. Holding the lock until COMMIT would need changes to `withTransaction`, which the plan doesn't include.\n3. **A leaked lock would block orders.** An error path that fails to release the lock hangs every later order for that product. The `Map` is also never cleaned up. The in-process lock also adds deadlock risk when an order has several items.\n4. **The proposed test would pass while production stays broken.** A fake client with in-process promises can't model separate transactions, Postgres row visibility, or multiple replicas. It would show green for the same race you are trying to fix.\n5. **Minor:**\n   - The current behaviour, where the second UPDATE hits `CHECK (stock >= 0)` (verified: `0001_init.sql:14`) and returns a 500, is the safety net. Keep it as a backstop.\n   - \"No API change\" is not quite accurate. `orders.ts` has no handler that maps `OutOfStockError` to a response, so it will still return a 500. Mapping it to 409 is a small, reasonable addition, but it is an API behaviour change, so confirm it.\n\n## Alternatives\n- **Recommended: the atomic conditional UPDATE** described above.\n  - It takes a row lock and re-checks `stock >= $1` against the latest committed row.\n  - It works across replicas.\n  - It needs no schema change.\n  - It is smaller than the plan.\n- **Alternative: `SELECT ... FOR UPDATE`** before the existing check. This keeps the current structure but adds one more round trip. Consider ordering items by `product_id` so multi-item orders can't deadlock.\n\n## Impact\nNo migration. Deploying it needs no ordering, and old and new replicas can run side by side during a rollout.\n\n## Validation\n- Run an integration test against real Postgres (docker-compose `db`). Open two connections with `BEGIN` and stock=1. Have both call `reserveStock` and commit. Exactly one must succeed and the other must throw `OutOfStockError`.\n- Keep the existing unit tests. `tests/inventory.test.ts:21` asserts the query order, so update it for the new SQL.\n- Rollback trigger: any `CHECK` violation or unexpected 5xx on `POST /orders` after deploy.\n\n## Decisions\n- Should `OutOfStockError` map to a 409 response? My pick is yes, as part of this fix.\n\n## Next\nRedraft with changes 1–4? yes/no\n\nPlan status: REJECTED (REVISION_REQUIRED). Nothing has been modified or executed."
+  ],
+  "stderr_tail": "",
+  "raw_events_file": "results/r3-dev/d06-race-inventory/skill.claude.events.jsonl"
+}

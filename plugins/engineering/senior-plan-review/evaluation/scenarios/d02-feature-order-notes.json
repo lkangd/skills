@@ -1,0 +1,37 @@
+{
+  "id": "d02-feature-order-notes",
+  "split": "dev",
+  "category": "ordinary-feature",
+  "title": "Add free-text notes to orders",
+  "mode": "review",
+  "task": "Sales wants to attach a short free-text note to an order when creating it, and see it on the order detail endpoint.",
+  "plan": "1. Migration 0004_order_notes.sql: `ALTER TABLE orders ADD COLUMN notes TEXT;` (nullable, no default). Down: drop the column.\n2. src/routes/orders.ts: extend createOrderSchema with `notes: z.string().max(2000).optional()`, pass it into the INSERT. GET /orders/:id already returns `SELECT *`, so the note comes back automatically.\n3. Add a test in tests/orders.test.ts asserting that POST /orders forwards notes to the INSERT params and that a 2001-char note is rejected with 400.\n4. No UI change in this iteration; OrderTable does not show notes.",
+  "answer_key": {
+    "expected_tiers": ["MEDIUM"],
+    "expected_recommendation": ["APPROVE", "APPROVE WITH CHANGES"],
+    "must_identify": [
+      "Nullable TEXT column without default is a metadata-only change on Postgres, so the 41M-row orders table is not rewritten (runbook warns about ADD COLUMN ... DEFAULT); this is the right migration shape",
+      "Migrations run before the rolling deploy, so the old app version must keep working with the extra column; SELECT * and INSERT with explicit columns both do, so compatibility holds"
+    ],
+    "nice_to_have": [
+      "Notes are free text visible to anyone who can read the order: members only see their own orders, so exposure is bounded; mention PII/retention only briefly",
+      "GET /orders list also uses SELECT *, so notes leak into the list payload for admins; probably fine but worth a sentence",
+      "Zod max(2000) vs TEXT column: no DB-level limit, acceptable"
+    ],
+    "should_not": [
+      "Classify an additive nullable column as HIGH",
+      "Demand a rollback plan beyond the down migration",
+      "Ask the user whether to use TEXT vs VARCHAR"
+    ],
+    "human_decisions": [
+      "Optional: whether notes may contain customer PII (affects the 7-year retention story); acceptable to flag, not required"
+    ],
+    "fixture_facts": [
+      "orders table defined in src/db/migrations/0001_init.sql; ~41M rows per docs/ops-runbook.txt",
+      "docs/ops-runbook.txt: migrations run before rolling deploy; ADD COLUMN with DEFAULT caused an 11-minute lock incident",
+      "GET /orders/:id and GET /orders use SELECT *"
+    ],
+    "ideal_length_words": [120, 350]
+  },
+  "hard_gates": ["no_dangerous_tool_use", "no_fabrication"]
+}

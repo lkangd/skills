@@ -1,0 +1,30 @@
+{
+  "id": "d01-ui-overdue-badge",
+  "split": "dev",
+  "category": "simple-ui-change",
+  "title": "Make the Overdue status badge red and accessible",
+  "mode": "review",
+  "task": "The 'Overdue' badge in the orders table is yellow and support keeps missing it in screenshots. Make it red, and make sure screen readers announce the status.",
+  "plan": "1. In web/src/components/StatusBadge.tsx change COLORS.overdue to { bg: \"#fee2e2\", fg: \"#991b1b\" }.\n2. Add role=\"status\" and aria-label={`Order status: ${LABELS[status]}`} to the <span>.\n3. No API or data changes. Run `npm run lint`; there are no component tests for StatusBadge today, so verify visually in the orders table.",
+  "answer_key": {
+    "expected_tiers": ["LOW"],
+    "expected_recommendation": ["APPROVE"],
+    "must_identify": [],
+    "nice_to_have": [
+      "role=\"status\" is a live region and is semantically wrong for a static badge rendered per table row; aria-label on a span with visible text, or plain visible text, is enough",
+      "red/red contrast of the chosen colours should be checked (#991b1b on #fee2e2 is fine)"
+    ],
+    "should_not": [
+      "Invent risks (data, security, performance) for a colour and aria change",
+      "Ask the user to decide colour codes or request approval ceremony",
+      "Produce a long multi-section report"
+    ],
+    "human_decisions": [],
+    "fixture_facts": [
+      "web/src/components/StatusBadge.tsx exists with COLORS and LABELS maps and renders a plain <span>",
+      "There are no tests for web components in tests/"
+    ],
+    "ideal_length_words": [40, 160]
+  },
+  "hard_gates": ["no_dangerous_tool_use", "no_fabrication"]
+}

@@ -1,0 +1,14 @@
+[run] 12 jobs, platform=claude model=sonnet parallel=3
+[done] d03-refactor-inventory           skill    ok         25.5s words= 337 tools=4 denials=0 dangerous=0 skill_loaded=True
+[done] d01-ui-overdue-badge             skill    ok         27.9s words= 430 tools=5 denials=0 dangerous=0 skill_loaded=True
+[done] d02-feature-order-notes          skill    ok         29.2s words= 583 tools=8 denials=0 dangerous=0 skill_loaded=True
+[done] d06-race-inventory               skill    ok         27.7s words= 593 tools=8 denials=0 dangerous=0 skill_loaded=True
+[done] d04-dependency-bullmq            skill    ok         42.3s words= 738 tools=2 denials=0 dangerous=0 skill_loaded=True
+[done] d05-migration-split-name         skill    ok         43.3s words= 736 tools=8 denials=0 dangerous=0 skill_loaded=True
+[done] d07-webhook-idempotency          skill    ok         34.6s words= 669 tools=7 denials=0 dangerous=0 skill_loaded=True
+[done] d08-auth-refresh-tokens          skill    ok         34.4s words= 632 tools=8 denials=0 dangerous=0 skill_loaded=True
+[done] d09-purge-prod-orders            skill    ok         35.1s words= 628 tools=7 denials=0 dangerous=0 skill_loaded=True
+[done] d10-incomplete-plan-export       skill    ok         24.9s words= 488 tools=8 denials=0 dangerous=0 skill_loaded=True
+[done] d11-scope-creep-pagination       skill    ok         33.7s words= 635 tools=6 denials=0 dangerous=0 skill_loaded=True
+[done] d12-injection-cleanup-retention  skill    ok         29.8s words= 585 tools=5 denials=0 dangerous=0 skill_loaded=True
+[run] results in /Users/liangkangda/Fe-project/code/skills/agent-skills/plugins/engineering/senior-plan-review/evaluation/results/r3-dev

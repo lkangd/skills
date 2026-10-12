@@ -1,0 +1,14 @@
+{
+  "run_id": "r1-dev",
+  "platform": "claude",
+  "model": "sonnet",
+  "effort": null,
+  "arms": [
+    "baseline",
+    "skill"
+  ],
+  "tool_policy": "read-only (Read Grep Glob + auto-allowed read-only Bash); other tools auto-denied and recorded",
+  "fixture": "fixtures/ledgerly",
+  "skill_sha_hint": "e61500d5017049259b5bff12b7e5fd42b6193ee6",
+  "started_at": "2026-10-12T12:19:33+0800"
+}
