@@ -69,6 +69,21 @@ def find_named_workspace(tree: dict, name: str) -> dict | None:
     return None
 
 
+def find_named_workspace_poll(cmux: Cmux, name: str, timeout: float = 5.0) -> dict | None:
+    # cmux state changes propagate asynchronously; a freshly created workspace
+    # can take seconds to show up in `tree --all`, so poll instead of one-shot.
+    deadline = time.time() + timeout
+    while True:
+        tree = cmux.run(["tree", "--all"])
+        if isinstance(tree, dict):
+            found = find_named_workspace(tree, name)
+            if found is not None:
+                return found
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.25)
+
+
 class Cmux:
     def __init__(self, binary: str) -> None:
         self.binary = binary
@@ -130,6 +145,26 @@ def list_panes(cmux: Cmux, workspace_ref: str, window_ref: str) -> list[dict]:
     if not isinstance(panes, list):
         fail("cmux list-panes did not return a pane list")
     return panes
+
+
+def wait_for_new_panes(
+    cmux: Cmux,
+    workspace_ref: str,
+    window_ref: str,
+    before_refs: set[str],
+    timeout: float = 5.0,
+) -> list[dict]:
+    # new-split results also propagate asynchronously; poll until the new panes
+    # appear in list-panes instead of relying on a fixed sleep.
+    deadline = time.time() + timeout
+    while True:
+        panes = list_panes(cmux, workspace_ref, window_ref)
+        created = [pane for pane in panes if pane.get("ref") not in before_refs]
+        if created:
+            return created
+        if time.time() >= deadline:
+            return []
+        time.sleep(0.25)
 
 
 def split_pane(
@@ -284,16 +319,14 @@ def add_panes_for_worktree(
     if top.get("ref") != bottom.get("ref"):
         split_pane(cmux, bottom, "right", workspace_ref, window_ref)
     else:
-        time.sleep(SPLIT_SETTLE_SECONDS)
-        mid = list_panes(cmux, workspace_ref, window_ref)
-        new_panes = [pane for pane in mid if pane.get("ref") not in before_refs]
+        new_panes = wait_for_new_panes(
+            cmux, workspace_ref, window_ref, before_refs
+        )
         if not new_panes:
             fail("cmux new-split right did not create a pane")
         split_pane(cmux, new_panes[0], "down", workspace_ref, window_ref)
 
-    time.sleep(SPLIT_SETTLE_SECONDS)
-    after = list_panes(cmux, workspace_ref, window_ref)
-    created = [pane for pane in after if pane.get("ref") not in before_refs]
+    created = wait_for_new_panes(cmux, workspace_ref, window_ref, before_refs)
     if not created:
         fail("cmux split did not create new panes")
     for pane in created:
@@ -331,14 +364,17 @@ def setup(name: str, worktree: str, folder_existed: bool) -> int:
             ],
             json_output=False,
         )
-        tree = cmux.run(["tree", "--all"])
-        if not isinstance(tree, dict):
-            fail("cmux tree returned an unexpected payload after create")
-        found = find_named_workspace(tree, name)
+        found = find_named_workspace_poll(cmux, name)
         if found is None:
             fail(f"created cmux workspace {name} but could not find it")
         select_workspace(cmux, found["workspace_ref"], found["window_ref"])
-        panes = list_panes(cmux, found["workspace_ref"], found["window_ref"])
+        panes: list[dict] = []
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            panes = list_panes(cmux, found["workspace_ref"], found["window_ref"])
+            if len(panes) >= 2:
+                break
+            time.sleep(0.25)
         if len(panes) <= 1:
             add_panes_for_worktree(
                 cmux,
