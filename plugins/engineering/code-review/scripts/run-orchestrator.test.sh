@@ -140,9 +140,7 @@ for prompt in "$SMALL_RUN"/prompts/*.md; do
 done
 assert_json "$SMALL_RUN/out/orchestrator.exit" '. == 0'
 
-# Reviewer/verifier definitions are agent files that embed the packet verbatim in their system
-# prompt (one shared, cacheable prefix per tier) and reach the session via --add-dir; the angle
-# prompts must therefore steer reviewers to the addendum instead of re-reading packet.md.
+# Agent definitions share the requirements. Assigned diff content belongs in the task prompt.
 for agent in reviewer-high:inherit:20 reviewer-medium:inherit:20 reviewer-low:inherit:20 verifier:inherit:15; do
   name="${agent%%:*}"
   rest="${agent#*:}"
@@ -158,7 +156,7 @@ for agent in reviewer-high:inherit:20 reviewer-medium:inherit:20 reviewer-low:in
   grep -Fq "HARD cap of $turns turns" "$file" || fail "agent prompt does not state its turn budget: $file"
   ! grep -Fq 'TURN_BUDGET' "$file" || fail "agent prompt kept the raw TURN_BUDGET placeholder: $file"
   grep -q '^tools: Read, Grep, Glob$' "$file" || fail "agent file lost its tool allowlist: $file"
-  grep -Fq 'small change' "$file" || fail "agent file does not embed the packet diff: $file"
+  ! grep -Fq '+small change' "$file" || fail "agent file embeds the full diff: $file"
   grep -Fq '# Review Packet' "$file" || fail "agent file lacks the packet heading: $file"
 done
 # Subagents must run in the foreground: a backgrounded reviewer returns async_launched to the
@@ -174,7 +172,7 @@ grep -Fq 'No project convention documents' "$SMALL_RUN/packet-addendum.md" \
   || fail "addendum does not state that no convention documents exist"
 grep -Fq 'Not applicable: the target is a committed range' "$SMALL_RUN/packet-addendum.md" \
   || fail "addendum does not state that untracked files do not apply to a committed range"
-grep -Fq 'is ALSO pre-built' "$SMALL_RUN/orchestrator-prompt.md" \
+grep -Fq "$SMALL_RUN/packet-addendum.md is available for targeted reads" "$SMALL_RUN/orchestrator-prompt.md" \
   || fail "orchestrator prompt does not tell the orchestrator the addendum is pre-built"
 grep -Fxq -- "--add-dir" "$SMALL_RUN/runner-args.txt" \
   || fail "runner was not launched with --add-dir"
@@ -183,10 +181,8 @@ grep -Fxq -- "$SMALL_RUN/agents" "$SMALL_RUN/runner-args.txt" \
 ! grep -Fxq -- "--agents" "$SMALL_RUN/runner-args.txt" \
   || fail "runner still receives inline --agents JSON"
 for prompt in "$SMALL_RUN"/prompts/*.md; do
-  grep -Fq "$SMALL_RUN/packet-addendum.md" "$prompt" \
-    || fail "concretized prompt does not name the packet addendum: $prompt"
-  grep -Fq 'already in your system prompt' "$prompt" \
-    || fail "concretized prompt does not tell reviewers the packet is in their system prompt: $prompt"
+  grep -Fq '## Assigned diff' "$prompt" || fail "task prompt is missing its assigned diff: $prompt"
+  grep -Fq '+small change' "$prompt" || fail "task prompt is missing its changed line: $prompt"
 done
 
 # Resuming a run dir that predates the agent files rebuilds them from its packet.md.
@@ -201,8 +197,8 @@ rm -rf "$LEGACY_RESUME_RUN/agents" "$LEGACY_RESUME_RUN/out/orchestrator.exit" \
 )
 [ -r "$LEGACY_RESUME_RUN/agents/.claude/agents/reviewer.md" ] \
   || fail "resume did not rebuild missing agent definitions"
-grep -Fq 'small change' "$LEGACY_RESUME_RUN/agents/.claude/agents/reviewer.md" \
-  || fail "rebuilt agent definition does not embed the packet"
+! grep -Fq '+small change' "$LEGACY_RESUME_RUN/agents/.claude/agents/reviewer.md" \
+  || fail "rebuilt agent definition embeds the full diff"
 # A run whose agent files predate turn budgets (present but without maxTurns) is upgraded on
 # resume rather than dispatching unbounded agents again.
 sed -i.bak '/^maxTurns:/d' "$LEGACY_RESUME_RUN"/agents/.claude/agents/*.md
@@ -382,6 +378,8 @@ done
 
 PYTHONPATH="$SCRIPT_DIR" python3 -B - <<'PYTEST'
 from review_workspace import Change, balance, patch_weight
+from review import review_tasks
+from review_workers import complexity_models
 
 def change(path, count):
     patch = (f"diff --git a/{path} b/{path}\n--- /dev/null\n+++ b/{path}\n"
@@ -392,6 +390,20 @@ assert len(balance([change("a/x", 1500), change("b/y", 100)], 3)) == 1
 slices = balance([change("a/x", 3600)], 4)
 assert len(slices) > 1
 assert sum(part.weight for group in slices for part in group) == 3600
+
+models = {
+    "fast": {"efforts": ["low"], "context_window": 10000},
+    "balanced": {"efforts": ["low", "medium"], "context_window": 20000},
+    "deep": {"efforts": ["low", "medium", "high"], "context_window": 50000},
+}
+assert complexity_models(models, "deep") == {"low": "fast", "medium": "balanced", "high": "deep"}
+lines = "".join(f"{i:04d} " + "x" * 180 + "\n" for i in range(200))
+untracked = Change("new.txt", f"### new.txt\n````\n{lines}\n````\n", 200)
+profiles = {"low": {"context_window": 4000}}
+tasks = review_tasks([untracked], ["cleanup"], profiles, 0)
+assert 4 < len(tasks) <= 13
+assigned = "".join(part.patch for _, _, _, group in tasks for part in group)
+assert all(f"{i:04d} " in assigned for i in range(200))
 PYTEST
 
 printf 'ok - launcher persists balanced ready review plans\n'

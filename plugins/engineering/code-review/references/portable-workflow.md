@@ -14,7 +14,8 @@ plans, executes, verifies, checkpoints and consolidates each round.
    Supply spec paths from `--spec` or the current conversation. Pass requirements from the
    conversation as `spec_context`. Ask once when neither source exists, with no spec as the default.
 3. **Run**. Call `review_run` once with `mode: normal` or `mode: adversarial`. Pass flag
-   overrides as `concurrency` and `max_rounds`. The adapter looks for the actual worker
+   overrides as `concurrency` and `max_rounds`. The adapter selects the runner from the
+   invoking host's configuration and looks for the actual worker
    harness's model catalog and capability definitions. It applies explicit model/effort
    overrides, matches supported effort to task complexity and uses the harness defaults
    when discovery is unavailable. The result records the model selection for resume.
@@ -24,13 +25,13 @@ plans, executes, verifies, checkpoints and consolidates each round.
    review in the main session.
 4. **Resume**. Call `review_resume` with the requested run directory. When the user omits
    it, call without a directory, offer the latest incomplete run, and confirm the choice.
-   Wait for the selected resume call as for a new round. Resume uses its persisted backend,
+   Wait for the selected resume call as for a new round. Resume uses its persisted runner,
    task plan and model settings. A `legacy` result
    identifies a Claude Code checkpoint. Use the Claude command in a Claude Code session,
    with the original compatible runner if needed.
 5. **Act**. On a completed round, open the returned findings file. Use
    [review-core.md](review-core.md#5-verify-findings-and-act) §5 to verify each finding against
-   the current code, fix in-scope issues, backlog out-of-scope issues, and account for every
+   the current code, consolidate duplicates, fix in-scope issues, backlog out-of-scope issues, and account for every
    disposition. Check stale and unverified findings especially carefully. Keep the working
    tree and index intact apart from authorized fixes and backlog edits. No stage, commit,
    push, revert, or worktree switching without explicit authorization.

@@ -24,7 +24,7 @@ known-issues list to suppress (may be "none").
 - Never create, edit, or delete files outside `RUN_DIR`. Never stage, commit, or revert.
 - Dispatch subagents using the provided `reviewer-low`, `reviewer-medium`,
   `reviewer-high` and `verifier` types — never `general-purpose`, and never the `fork` type (a fork inherits your
-  context, tools, and model. Dispatch up to 13 first-wave reviewers plus the gap sweep.
+  context, tools, and model. Dispatch up to 13 first-wave reviewers. Dispatch the gap sweep in the declared late wave.
   Queue all verification batches within the configured concurrency.
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
   enforce this — do not work around it.
@@ -83,23 +83,11 @@ preserves existing candidate numbering and finished batches and prints exactly w
 
 ## Step 1 — The packet and its addendum are pre-built; go straight to dispatch
 
-`RUN_DIR/packet.md` is complete and frozen: the launcher wrote the target description, the
-`--stat` list, the known-issues list (when present), the spec documents (when any), and the
-full unified diff (also raw in `RUN_DIR/raw_diff.txt`), then embedded the whole file verbatim
-in the system prompt of every `reviewer-low`, `reviewer-medium`, `reviewer-high`, and `verifier` definition. Siblings
-of one type therefore share a single cacheable prompt prefix instead of each reading 30k+
-tokens from disk. Never read the packet yourself (it is not your job to review it), and never
-append to it — anything added there reaches nobody. `RUN_DIR/diff-stat.txt` is the
-changed-file list; read that when you need to know which files and directories the diff
-touches.
-
-**`RUN_DIR/packet-addendum.md`** is pre-built too: the launcher gathered the repo's convention
-documents (root `CLAUDE.md`/`AGENTS.md`/`CONTRIBUTING.md`/coding standards/style guides, plus
-`CLAUDE.md`/`AGENTS.md` along every changed path) and, for working-tree targets, the content
-of untracked files. Every reviewer and verifier Reads it once, batched with its first tool
-calls. Do not read, trim or rewrite it — that used to be your Step 1 and cost 2–3 minutes and
-several hundred thousand cache-read tokens per round for a file the repo fully determines.
-Your first message of the round is the Step 2 dispatch (after `findings.sh pending`).
+The launcher saves the full packet for recovery and diagnostics. Each agent gets the
+target, changed-file list, known issues and requirements in its system prompt. Each
+review task file contains only the assigned diff. Reviewers can inspect related code
+and relevant portions of `RUN_DIR/packet-addendum.md` for project conventions. Existing
+checkpoints may have the full packet embedded in the saved agent definitions.
 
 **Addendum fallback** (when resuming a run from before the launcher created the file): write it
 yourself before the first dispatch in one Read-batch + one Write. Section `## A. Project
@@ -110,11 +98,8 @@ note truncation), otherwise one line saying not applicable.
 
 ## Step 2 — Dispatch angle reviewers
 
-`RUN_DIR/prompts/<angle>.md` already exists for every angle this round — the launcher
-validated and concretized the templates (packet path, the note that the packet is already in
-the reviewer's system prompt and that the addendum must be read instead, repo root, known
-issues) at zero token cost, `sweep.md` included. Never read the templates or rewrite these base
-files. A missing base prompt is a corrupt launch artifact: stop rather than inventing one.
+Use the prepared prompt for each task ID in the plan. The launcher has already resolved
+templates and selected the hunks.
 
 `RUN_DIR/review-plan.json` records immutable `requested_angles`, declared
 `late_waves`, and the balanced tasks for wave 1. New runs start with a ready plan.
@@ -197,12 +182,9 @@ The helper may report candidates on nearby lines. Preserve them through verifica
 the main session can judge whether their mechanisms overlap. Read the prepared files as
 needed and pass their paths to the verifier.
 
-Then dispatch one `verifier` subagent (medium complexity) per `verify-input-<n>.json`. Each
-verifier session re-pays the repo files it opens, so batches are sized to keep the dispatch
-count low; do not split them further. Give each verifier: the path of its batch file (the
-candidate objects carry their `index`), the path of `RUN_DIR/packet-addendum.md` (the packet
-itself is already in the verifier's system prompt — say so, and never tell it to read
-`packet.md`), and the following instructions **verbatim**:
+Dispatch one `verifier` (medium complexity) per `verify-input-<n>.json`, at most ten
+at a time and within the configured concurrency. Give each verifier its batch path,
+the path to the addendum for targeted conventions checks, and these instructions.
 
 > Investigate each candidate against the actual code and return one verdict per candidate.
 > Judge each candidate independently on its own claim. The verdicts:
@@ -250,17 +232,12 @@ Step 4 joins the verdicts and preserves cleanup pass-throughs.
 
 ## Step 3.5 — Sweep for gaps (only when the angle list includes `design`)
 
-Adversarial rounds get one extra pass hunting only for what the first wave missed.
-`RUN_DIR/prompts/sweep.md` is pre-built like the other angle prompts except for one
-placeholder: replace `{{VERIFIED_FINDINGS}}` with one line per surviving candidate
-(`<file>:<line> — <title>`, or "none") and change nothing else in the file. Before dispatch,
-append exactly one task `{id: "sweep", angle: "sweep", wave: 2}` to the ready
-`review-plan.json` if it is not already present — the launcher declared that wave in
-`late_waves`, and appending a task to a declared late wave is the only plan change allowed
-after first-wave finalization. Then run `findings.sh pending`: dispatch sweep with `reviewer-high` only when its ID
-is returned, checkpoint its completion receipt to `out/candidates-sweep.json`, and re-run
-`findings.sh prepare` (it picks the planned task up and preserves existing numbering). Verify
-the batches that changed exactly as in Step 3. The gap sweep has a slot of its own outside the first-wave budget.
+After the first wave is verified, append the tasks from `RUN_DIR/sweep-tasks.json` to
+`review-plan.json` if the late wave has no tasks yet. Older runs without that file use one
+task with ID and angle `sweep` in wave 2. Run `findings.sh pending`. For each pending
+sweep task, replace `{{VERIFIED_FINDINGS}}` in its prepared prompt with a short list of
+surviving findings (file, line and title) and dispatch `reviewer-high`. Checkpoint each
+receipt. Re-run `findings.sh prepare` and verify the changed batches.
 
 ## Step 4 — Final report
 

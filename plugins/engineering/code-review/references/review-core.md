@@ -126,9 +126,9 @@ never fabricate a spec, and never block the review on one.
    The script builds the orchestrator prompt AND the diff packet itself (fails fast on a bad
    diff spec) — never read or fill `references/orchestrator.md` in this session. It also
    enforces the `CODE_REVIEW_CHILD` sentinel and writes the read-only
-   `reviewer-low`/`reviewer-medium`/`reviewer-high`/`verifier` agent definitions under `RUN_DIR/agents/`, each with
-   the packet embedded in its system prompt so sibling reviewers share one cached prefix
-   instead of re-reading the packet from disk.
+   `reviewer-low`/`reviewer-medium`/`reviewer-high`/`verifier` definitions under `RUN_DIR/agents/`.
+   The definitions share the review scope and requirements. The launcher writes the assigned
+   hunks into each task prompt.
 4. Read the result. The authoritative payload is **`RUN_DIR/out/findings.json`**: an array
    of finding objects (`severity`, `verdict`, `angle`, `title`, `file`, `line`, `evidence`,
    `why`, `suggestion`, `verdict_evidence`), already verified (verdict `CONFIRMED` or
@@ -183,6 +183,10 @@ no ` ```json ` block in `out/orchestrator.out`), confirm it with the user, and r
 instead of starting a new round.
 
 ## §5 Verify findings and act
+
+Group findings that identify the same defect before acting. Use the strongest evidence for
+each group, keep every source angle, and report the shared disposition for the duplicate
+entries. In adversarial mode, include each original index whose defect was fixed.
 
 For each finding in the consolidated report, verify it yourself against the actual code — the
 orchestrator's verdict is a strong signal, not a substitute for your own check. `CONFIRMED`

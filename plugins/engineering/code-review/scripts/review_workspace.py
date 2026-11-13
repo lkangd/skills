@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -103,19 +104,40 @@ def validate_settings(repo, result):
             if any(not isinstance(item, str) or not item.strip()
                    or any(char in item for char in "\0\r\n") for item in profile.values()):
                 raise ValueError(f"{backend} model and effort overrides must be nonempty strings")
-    validate_claude_runner(result["claude"].get("runner"))
+        if backend == "claude" or "runner" in result[backend]:
+            try:
+                runner_command(result[backend].get("runner"))
+            except ValueError as error:
+                raise ValueError(f"{backend}.runner must select an external Claude, Codex or Pi runner") from error
     return result
 
 
-def validate_claude_runner(runner):
-    if (not isinstance(runner, str) or not runner.strip()
-            or any(char in runner for char in "\0\n\r") or runner.strip() == "in-session"):
-        raise ValueError("claude.runner must name an external Claude-compatible runner")
+def runner_command(runner):
+    harness = None
+    if isinstance(runner, dict) and set(runner) == {"harness", "command"}:
+        harness = runner["harness"]
+        if harness not in BACKENDS:
+            raise ValueError("Unknown runner harness")
+        runner = runner["command"]
+    if not isinstance(runner, str) or any(char in runner for char in "\0\n\r"):
+        raise ValueError("Expected an external runner command")
+    argv = shlex.split(runner)
+    if not argv or not argv[0] or Path(argv[0]).name == "in-session":
+        raise ValueError("Expected an external runner command")
+    executable = Path(argv[0]).name
+    return harness or (executable if executable in BACKENDS else "claude"), argv
 
 
-def git(repo, *args, data=None):
+def claude_runner_argv(runner):
+    harness, argv = runner_command(runner)
+    if harness != "claude":
+        raise ValueError("Expected a Claude-compatible runner command")
+    return argv
+
+
+def git(repo, *args, data=None, env=None):
     result = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", str(repo), *args],
-                            input=data, capture_output=True)
+                            input=data, capture_output=True, env=env)
     if result.returncode:
         raise ValueError(result.stderr.decode(errors="replace").strip() or f"git {args[0]} failed")
     return result.stdout
@@ -165,12 +187,12 @@ def split_paths(raw):
     return [os.fsdecode(path) for path in raw.split(b"\0") if path]
 
 
-def diff_changes(repo, args, paths):
+def diff_changes(repo, args, paths, env=None):
     options = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--find-renames",
                "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/"]
     command = ["--literal-pathspecs", "-c", "core.quotePath=false", "diff", *options]
-    names = split_paths(git(repo, *command, "--name-only", "-z", *args, "--", *paths))
-    patch = git(repo, *command, "--patch", *args, "--", *paths).decode("utf-8", errors="replace")
+    names = split_paths(git(repo, *command, "--name-only", "-z", *args, "--", *paths, env=env))
+    patch = git(repo, *command, "--patch", *args, "--", *paths, env=env).decode("utf-8", errors="replace")
     sections = re.split(r"(?m)(?=^diff --git )", patch)[1:]
     if len(names) != len(sections):
         raise ValueError("Git returned different file and patch lists. Check the Git diff configuration.")
@@ -185,12 +207,14 @@ def patch_weight(patch):
     return max(1, sum(line.startswith(("+", "-")) for line in body))
 
 
-def untracked(repo, paths):
+def untracked_paths(repo, paths):
     names = split_paths(git(repo, "--literal-pathspecs", "ls-files", "--others", "--exclude-standard",
                             "-z", "--", *paths))
-    for name in names:
-        if Path(name).parts[0] == ".code-review":
-            continue
+    return [name for name in names if Path(name).parts[0] != ".code-review"]
+
+
+def untracked(repo, paths, names=None, line_limit=None):
+    for name in untracked_paths(repo, paths) if names is None else names:
         path = repo / name
         if path.is_symlink():
             yield Change(name, f"### {name}\nSymbolic link to {os.readlink(path)}.\n", 1)
@@ -198,14 +222,78 @@ def untracked(repo, paths):
             data = path.read_bytes()
             binary = b"\0" in data
             lines = [] if binary else data.decode("utf-8", errors="replace").splitlines(keepends=True)
-            excerpt = "(binary content omitted)" if binary else "".join(lines[:400])
-            digest = hashlib.sha256(data).hexdigest()
-            yield Change(name, f"### {name} (untracked, {len(lines)} lines, sha256 {digest})\n"
+            excerpt = "(binary content omitted)" if binary else "".join(lines[:line_limit])
+            checksum = hashlib.sha256(data).hexdigest()
+            yield Change(name, f"### {name} (untracked, {len(lines)} lines, sha256 {checksum})\n"
                          f"````\n{excerpt}\n````\n", max(1, len(lines)))
 
 
-def snapshot(repo, selection, subsequent=False):
+def staged_scope(repo, project, selection):
+    # Use private Git state to apply the post-launch worktree delta to the original index.
+    objects = project / "staged-objects"
+    objects.mkdir(exist_ok=True)
+    if objects.resolve() != objects:
+        raise ValueError("staged review objects must stay inside the run directory")
+    git_objects = os.fsdecode(git(repo, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+                              .rstrip(b"\n"))
+    with tempfile.TemporaryDirectory(dir=project) as scratch:
+        env = {**os.environ, "GIT_OBJECT_DIRECTORY": str(objects),
+               "GIT_ALTERNATE_OBJECT_DIRECTORIES": git_objects,
+               "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        index = git(repo, "ls-files", "--stage", "-z")
+        modified = set(git(repo, "diff-files", "--name-only", "--no-ext-diff",
+                           "--no-textconv", "-z").split(b"\0"))
+        git(repo, "update-index", "-z", "--index-info", data=index, env=env)
+        staged = selection.get("staged_tree")
+        if staged is None:
+            staged = git(repo, "write-tree", env=env).decode().strip()
+        entries = []
+        for entry in index.rstrip(b"\0").split(b"\0") if index else ():
+            attributes, name = entry.split(b"\t", 1)
+            if name not in modified:
+                continue
+            mode, oid, _ = attributes.split()
+            path = repo / os.fsdecode(name)
+            inside = path.parent.resolve().is_relative_to(repo)
+            if mode == b"160000" and inside and path.is_dir() and not path.is_symlink():
+                if (path / ".git").exists():
+                    head = commit(path, "HEAD").encode()
+                    entries.append(mode + b" " + head + b"\t" + name + b"\0")
+                continue
+            if inside and path.is_symlink():
+                contents, mode = os.fsencode(os.readlink(path)), b"120000"
+            elif inside and path.is_file():
+                contents = path.read_bytes()
+                mode = b"100755" if path.stat().st_mode & 0o111 else b"100644"
+            else:
+                entries.append(b"0 " + b"0" * len(oid) + b"\t" + name + b"\0")
+                continue
+            blob = git(repo, "hash-object", "-w", "--stdin", data=contents, env=env).strip()
+            entries.append(mode + b" " + blob + b"\t" + name + b"\0")
+        git(repo, "update-index", "-z", "--index-info", data=b"".join(entries), env=env)
+        worktree = git(repo, "write-tree", env=env).decode().strip()
+        if "staged_tree" not in selection:
+            return staged, worktree
+        delta = git(repo, "diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv",
+                    "--no-color", "--no-relative", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
+                    selection["staged_worktree"], worktree, env=env)
+        if delta:
+            git(repo, "read-tree", staged, env=env)
+            try:
+                git(repo, "apply", "--cached", "--3way", "--whitespace=nowarn", "-", data=delta, env=env)
+            except ValueError as error:
+                raise ValueError("Post-launch edits overlap pre-existing unstaged changes. "
+                                 "The staged review cannot isolate the follow-up patch.") from error
+            staged = git(repo, "write-tree", env=env).decode().strip()
+        return diff_changes(repo, [selection["refs"][0], staged], [], env=env)
+
+
+def snapshot(repo, selection, subsequent=False, project=None):
     kind, refs, paths = (selection[key] for key in ("kind", "refs", "paths"))
+    if subsequent and kind == "staged" and "staged_tree" in selection:
+        changes = staged_scope(repo, project, selection)
+        changes.extend(new_untracked(repo, selection))
+        return changes
     if subsequent and kind in ("commit", "branch", "staged"):
         # Review the original target plus the working-tree delta since that round started.
         # Compare against the saved baseline so unrelated pre-existing edits stay outside it.
@@ -224,8 +312,7 @@ def snapshot(repo, selection, subsequent=False):
                     changes.append(initial[path])
             elif now:
                 changes.append(now)
-        changes.extend(change for change in untracked(repo, []) if change.path in initial
-                       or selection["untracked_before"].get(change.path) != digest(change.patch))
+        changes.extend(new_untracked(repo, selection, initial))
         return changes
     args = [*refs, "--cached"] if kind == "staged" else refs
     changes = diff_changes(repo, args, paths)
@@ -240,6 +327,44 @@ def digest(value):
 
 def fingerprints(changes):
     return {change.path: digest(change.patch) for change in changes}
+
+
+def untracked_state(repo):
+    return workspace_fingerprints(repo, untracked_paths(repo, []))
+
+
+def new_untracked(repo, selection, include=()):
+    if "untracked_state" not in selection:
+        before = selection["untracked_before"]
+        current = fingerprints(untracked(repo, [], line_limit=400))
+    else:
+        before = selection["untracked_state"]
+        current = untracked_state(repo)
+    names = [name for name in current if name in include or current[name] != before.get(name)]
+    return list(untracked(repo, [], names=names))
+
+
+def workspace_fingerprints(repo, paths):
+    fingerprints = {}
+    for name in paths:
+        path = repo / name
+        if not path.parent.resolve().is_relative_to(repo):
+            fingerprints[name] = None
+        elif path.is_symlink():
+            fingerprints[name] = ["link", digest(os.readlink(path))]
+        elif path.is_file():
+            try:
+                with path.open("rb") as source:
+                    checksum = hashlib.sha256()
+                    for block in iter(lambda: source.read(65536), b""):
+                        checksum.update(block)
+                    fingerprints[name] = ["file", bool(os.fstat(source.fileno()).st_mode & 0o111),
+                                          checksum.hexdigest()]
+            except (FileNotFoundError, IsADirectoryError):
+                fingerprints[name] = None
+        else:
+            fingerprints[name] = ["directory"] if path.is_dir() else None
+    return fingerprints
 
 
 def conventions(repo, changes):
@@ -266,7 +391,7 @@ def complexity(angle, changes):
     weight = sum(change.weight for change in changes)
     if angle in ("design", "pitfalls", "wrapper", "spec", "sweep", "re-review"):
         return "high"
-    if angle in ("correctness", "removed-behavior") and (len(changes) >= 4 or weight >= 500):
+    if angle in ("correctness", "removed-behavior", "callers") and (len(changes) >= 4 or weight >= 500):
         return "high"
     return "medium"
 
@@ -312,6 +437,26 @@ def pieces(change, line_budget, byte_budget):
     if len(change.patch.encode()) <= byte_budget and change.weight <= line_budget:
         return [change]
     if not change.patch.startswith("diff --git "):
+        header, fence, body = change.patch.partition("\n````\n")
+        if fence and body.endswith("\n````\n"):
+            lines = body[:-len("\n````\n")].splitlines(keepends=True)
+            parts = []
+            start = size = 0
+            budget = max(1, byte_budget - len(header.encode()) - 80)
+            for end, line in enumerate(lines):
+                line_size = len(line.encode())
+                if end > start and (size + line_size > budget or end - start >= line_budget):
+                    excerpt = "".join(lines[start:end])
+                    parts.append(Change(change.path, f"{header}, lines {start + 1}–{end}{fence}"
+                                        f"{excerpt}\n````\n", end - start))
+                    start, size = end, 0
+                size += line_size
+            if start < len(lines):
+                excerpt = "".join(lines[start:])
+                parts.append(Change(change.path, f"{header}, lines {start + 1}–{len(lines)}{fence}"
+                                    f"{excerpt}\n````\n", len(lines) - start))
+            if parts:
+                return parts
         return [change]
     header, *hunks = re.split(r"(?m)(?=^@@ -)", change.patch)
     if not hunks:
@@ -321,7 +466,7 @@ def pieces(change, line_budget, byte_budget):
             for hunk in hunks for chunk in split_hunk(hunk, line_budget, budget)]
 
 
-def balance(changes, slots, context_window=None, overhead=0):
+def balance(changes, slots, context_window=None, overhead=0, prefer_unsplit=False):
     if not changes:
         return [[]]
     # Reserve room for instructions, output and reading surrounding code. Byte estimates are
@@ -330,7 +475,7 @@ def balance(changes, slots, context_window=None, overhead=0):
     total = sum(change.weight for change in changes)
     total_bytes = sum(len(change.patch.encode()) for change in changes)
     fits = total_bytes <= available
-    if total <= 1100 and fits:
+    if fits and (prefer_unsplit or total <= 1100):
         return [changes]
     part_lines = min(2400, max(600, math.ceil(total / max(2, slots))))
     units = [part for change in changes for part in pieces(
@@ -343,11 +488,10 @@ def balance(changes, slots, context_window=None, overhead=0):
         by_directory.setdefault(str(Path(unit.path).parent), []).append(unit)
     groups = list(by_directory.values())
     group_target = max(total / min(ideal, slots), 1)
-    groups = [group for group in groups
-              if sum(unit.weight for unit in group) <= 1.3 * group_target] + [
-        [unit] for group in groups if sum(unit.weight for unit in group) > 1.3 * group_target
-        for unit in group
-    ]
+    groups = [piece for group in groups for piece in (
+        [group] if sum(unit.weight for unit in group) <= 1.3 * group_target
+        and sum(len(unit.patch.encode()) for unit in group) <= available else [[unit] for unit in group]
+    )]
     for count in range(min(ideal, slots, len(groups)), min(slots, len(groups)) + 1):
         if count <= 1:
             continue
@@ -356,7 +500,9 @@ def balance(changes, slots, context_window=None, overhead=0):
         sizes = [0] * count
         def group_weight(group):
             return sum(unit.weight for unit in group)
-        for group in sorted(groups, key=lambda g: (-group_weight(g), g[0].path)):
+        for group in sorted(groups, key=lambda g: (-max(group_weight(g) / group_target,
+                                                        sum(len(unit.patch.encode()) for unit in g) / available),
+                                                   g[0].path)):
             size = sum(len(unit.patch.encode()) for unit in group)
             index = min(range(count), key=lambda i: (max(
                 (weights[i] + group_weight(group)) / group_target,

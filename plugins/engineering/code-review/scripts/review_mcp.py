@@ -85,6 +85,7 @@ class Launcher:
     def __init__(self):
         self.child_env = dict(os.environ)
         data = os.environ.get("PLUGIN_DATA")
+        previous_data = None
         for parent in ROOT.parents:
             if parent.name == "cache" and parent.parent.name == "plugins":
                 self.child_env.setdefault("CODEX_HOME", str(parent.parent.parent))
@@ -92,12 +93,15 @@ class Launcher:
                     # Preserve repository approvals from the portable package.
                     market = ROOT.parent.parent.name
                     plugin = ROOT.parent.name
-                    identity = hashlib.sha256(f"{market}\0{plugin}".encode()).hexdigest()[:32]
-                    data = parent.parent / "data" / "agent-plugins" / identity
+                    identity = hashlib.sha256(f"{market}\0{plugin}".encode()).hexdigest()
+                    storage = parent.parent / "data" / "agent-plugins"
+                    data = storage / identity
+                    previous_data = storage / identity[:32]
                 break
         if data is None:
             raise ValueError("Install the code-review plugin before starting its launcher")
         self.data = Path(data)
+        self.previous_data = previous_data
         self.data.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.inbox = queue.Queue()
         self.deferred = []
@@ -128,6 +132,11 @@ class Launcher:
         authorization = self.data / f"workspace-{key}.json"
         if authorization.exists() and read_json(authorization) == {"workspace": str(repo)}:
             return repo
+        if self.previous_data is not None:
+            previous = self.previous_data / authorization.name
+            if previous.exists() and read_json(previous) == {"workspace": str(repo)}:
+                write_json(authorization, {"workspace": str(repo)})
+                return repo
         request = f"workspace-{uuid.uuid4().hex}"
         self.send({
             "id": request, "method": "elicitation/create",
@@ -227,7 +236,7 @@ class Launcher:
             if method == "initialize":
                 result = {"protocolVersion": params.get("protocolVersion", "2025-03-26"),
                           "capabilities": {"tools": {}},
-                          "serverInfo": {"name": "code-review", "version": "1.0.1"}}
+                          "serverInfo": {"name": "code-review", "version": "1.0.4"}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":

@@ -8,8 +8,8 @@ steps below before launching a runner.
 1. Run the same command with `config-template` to get a proposed configuration. Retain
    existing valid project values unless the user changes them.
 2. Ask the user to supply or accept the concurrency, adversarial round cap, backlog path,
-   external Claude runner, and model settings for Claude Code, Codex and Pi. For each host,
-   the user can choose harness model selection by leaving its overrides empty.
+   runner and model settings for Claude Code, Codex and Pi. For each host, the user can
+   choose harness model selection by leaving its model overrides empty.
 3. Show the complete JSON and ask for explicit confirmation to save it and, for a review
    invocation, proceed. If the user asks for changes, show the updated JSON and ask again.
    Wait for affirmative confirmation before writing or launching anything.
@@ -32,11 +32,18 @@ The template includes every required field.
 ```
 
 Concurrency is the maximum simultaneous review or verification tasks. Set it to `0` for
-no concurrency limit. The backlog path is relative to the Git root. The Claude runner is
-an external command such as `claude` or a compatible prefix such as `ccsp -g <preset> claude`.
+no concurrency limit. The backlog path is relative to the Git root. Each host can use
+`"runner": "claude"`, `"runner": "codex"`, or `"runner": "pi"`. The selection determines
+which harness runs that round. For a wrapper use the Claude-compatible command prefix
+`"ccsp -g <preset> claude"`, or specify the harness and command explicitly, for example
+`"runner": {"harness":"codex","command":"/path/to/wrapped-codex"}`. Codex and Pi use
+their own harness when their runner field is omitted.
 Keep credentials in the native harness configuration.
 
 Each host object accepts optional `models.low`, `models.medium`, and `models.high` entries
 with `model` and/or `effort` strings. Use the model identifier and effort values accepted
-by that harness. Pi model IDs use `provider/id`. Review attempts discover available
-models and supported effort from the actual backend when that interface is accessible.
+by the configured runner or native harness. Native Pi model IDs use `provider/id`.
+Review attempts discover available models, supported effort and context size from the
+selected harness. When the catalog distinguishes capabilities, it uses them to match
+models to low, medium and high complexity. Explicit overrides take precedence. When the
+catalog cannot distinguish models, it uses the harness default and supported effort.

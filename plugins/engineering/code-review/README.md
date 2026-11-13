@@ -36,10 +36,9 @@ A run writes its plan, task receipts and final `out/findings.json` under
 `.code-review/runs/`. Use the host's stop control to interrupt a round. Resume via
 `/code-review resume [<run-dir>]` in Claude Code or
 Pi, or the Codex skill's `resume` argument. A portable run resumes with its original
-Codex or Pi backend, even when the other host initiates recovery. Its backend CLI must
-be available and authenticated. Claude checkpoints use the Claude command and retain
-the compatible runner. For older checkpoints without runner metadata, provide the
-original command when asked.
+runner, even when another host initiates recovery. The runner must be available and
+authenticated. Older Claude checkpoints without a parent run record use the Claude
+command. Provide the original runner when asked.
 
 The shared scheduler saves each valid receipt when its task finishes. A completed
 empty receipt counts as work done. A round with failed tasks stays incomplete after
@@ -52,8 +51,9 @@ handled findings. The plugin leaves staging and commits to the user.
 All hosts require [.code-review/config.local.json](references/configuration.md) in the
 reviewed project. When it is missing or incomplete, provide or accept the proposed
 settings and confirm the complete JSON before the first round. Run the setup command
-again to edit it. Claude supports an external runner such as `claude` or a compatible
-prefix such as `ccsp -g <preset> claude`.
+again to edit it. Each host can select a Claude, Codex or Pi runner. The runner can
+also be a wrapper such as `ccsp -g <preset> claude`. Each round
+uses its original runner and model settings on resume.
 
 Tasks are classified as high, medium or low complexity. The backend checks its
 available models and supported reasoning settings when it can. Configure per-host

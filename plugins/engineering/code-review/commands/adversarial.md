@@ -61,24 +61,7 @@ Raw arguments: `$ARGUMENTS`
 
 ## Procedure
 
-Read `PLUGIN_ROOT/references/review-core.md` and execute it in **loop mode**. You do
-not orchestrate the reviews — each round launches one orchestrator session that does the diff
-collection, reviewer dispatch, and finding verification, and hands you a consolidated report:
-
-1. Follow the safety rules (§0) and require the shared configuration (§1).
-2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
-   else specs already in this session's context, else ask (default: no spec).
-3. **Round 1**: launch ONE orchestrator with angles
-   `correctness, removed-behavior, callers, cleanup, conventions, design, pitfalls, wrapper`
-   — plus `spec` (with one `--spec-file` per document) when §2.5 resolved spec sources —
-   (§3). The orchestrator also runs a post-verification gap sweep in this mode.
-   Yield until it returns the verified findings, then fix / backlog / reject per §5.
-4. **Rounds 2..max_rounds**: follow the loop protocol (§6) exactly — continue only while the
-   previous round produced confirmed major/critical findings that you fixed; each later round
-   launches one orchestrator with angles `re-review` on the cumulative diff, with the
-   known-issues list inlined.
-5. Report per §7, including how many rounds ran and why the loop stopped. Do not commit
-   anything.
-
-Budget invariant: exactly one orchestrator launch per round. All reviewer/verifier fan-out
-happens inside the orchestrator under its own caps (≤ 13 reviewers, ≤ 10 verifiers).
+Read `PLUGIN_ROOT/references/portable-workflow.md` and execute it in **adversarial mode**.
+Run `python3 -B "PLUGIN_ROOT/scripts/review.py" --repo "<git-root>" run --backend claude --mode adversarial`
+with the resolved arguments in a background Bash task. For later rounds use the `next`
+subcommand. Yield to the task's completion notification after each launch.

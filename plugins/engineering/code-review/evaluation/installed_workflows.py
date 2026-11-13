@@ -54,6 +54,61 @@ else:
     from fixture_worker import receipt
     print(json.dumps(receipt(sys.stdin.read())))
 '''
+FAKE_CCSP = r'''#!/usr/bin/env python3
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+assert sys.argv[1:4] == ["-g", "fixture", "claude"]
+args = sys.argv[4:]
+root = Path(__file__).resolve().parents[1]
+with (root / "runners.log").open("a") as log:
+    log.write(("discovery" if "--input-format" in args else
+               "resume" if "--resume" in args else "launch") + "\n")
+if "--input-format" in args:
+    print(json.dumps({"type": "control_response", "response": {"response": {"models": [
+        {"value": "default", "resolvedModel": "fixture-model",
+         "supportedEffortLevels": ["low", "medium", "high"]}
+    ]}}}))
+    sys.exit(0)
+
+prompt = args[args.index("-p") + (3 if args[args.index("-p") + 1].startswith("--") else 1)]
+run = Path(re.search(r"(/[^\n ]+/\.code-review/runs/[^\n ]+/round-\d+)", prompt)[1])
+assert os.environ["CODE_REVIEW_CHILD"] == "1"
+plan_path = run / "review-plan.json"
+plan = json.loads(plan_path.read_text())
+if plan["late_waves"] and not any(task["id"] == "sweep" for task in plan["tasks"]):
+    plan["tasks"].append({"id": "sweep", "angle": "sweep", "wave": 2, "complexity": "high"})
+    plan_path.write_text(json.dumps(plan))
+for task in plan["tasks"]:
+    path = run / "out" / f"candidates-{task['id']}.json"
+    if path.exists():
+        continue
+    findings = []
+    if task["id"] == "correctness" and "return n - 1" in (run / "raw_diff.txt").read_text():
+        findings.append({"severity": "major", "title": "Wrong arithmetic", "file": "math.py", "line": 2,
+                         "evidence": "return n - 1", "why": "increment(1) yields 0",
+                         "suggestion": "Return n + 1."})
+    if (Path.cwd() / "pause-review").exists() and task["id"] != "correctness":
+        time.sleep(20)
+    path.write_text(json.dumps({"status": "completed", "findings": findings}))
+    with (root / "workers.log").open("a") as log:
+        log.write(task["id"] + "\n")
+plugin = root / "source/plugins/engineering/code-review"
+command = ["bash", str(plugin / "scripts/findings.sh")]
+subprocess.run([*command, "prepare", "--run-dir", str(run), "--strict"], check=True)
+for path in (run / "out").glob("verify-input-*.json"):
+    batch = json.loads(path.read_text())
+    verdicts = [{"index": item["index"], "verdict": "CONFIRMED", "evidence": "math.py:2"}
+                for item in batch]
+    (path.parent / path.name.replace("verify-input-", "verdicts-")).write_text(json.dumps(verdicts))
+subprocess.run([*command, "build", "--run-dir", str(run), "--strict"], check=True)
+print("CODE-REVIEW RESULT: completed")
+'''
 FIXTURE_WORKER = r'''
 import json
 import os
@@ -164,17 +219,37 @@ def reset(repo):
     (repo / "math.py").write_text("def increment(n):\n    return n - 1\n")
 
 
-def configure(repo):
+def configure(repo, external=False):
     argv = [sys.executable, "-B", str(PLUGIN / "scripts/review.py"), "--repo", str(repo)]
     proposal = command([*argv, "config-template"], repo)
     config = repo / ".code-review/config.local.json"
     assert not config.exists()
+    if external:
+        settings = json.loads(proposal)
+        for host in ("claude", "codex", "pi"):
+            settings[host]["runner"] = "ccsp -g fixture claude"
+        proposal = json.dumps(settings)
     partial = subprocess.run([*argv, "config-save"], cwd=repo, input="{}",
                              capture_output=True, text=True)
     assert partial.returncode and not config.exists(), partial
     saved = subprocess.run([*argv, "config-save"], cwd=repo, input=proposal,
                            capture_output=True, text=True, check=True)
     assert json.loads(config.read_text()) == json.loads(saved.stdout) == json.loads(proposal)
+
+
+def exercise_cross_harness(repo, env):
+    config = repo / ".code-review/config.local.json"
+    original = config.read_text()
+    entry = [sys.executable, "-B", str(PLUGIN / "scripts/review.py")]
+    for host, runner in (("claude", "pi"), ("codex", "pi"), ("pi", "codex"), ("claude", "codex")):
+        settings = json.loads(original)
+        executable = Path(env["PATH"].split(os.pathsep)[0]) / runner
+        settings[host]["runner"] = {"harness": runner, "command": str(executable)}
+        config.write_text(json.dumps(settings))
+        report = json.loads(command([*entry, "run", "--backend", host, "working-tree"], repo, env))
+        assert_complete(report)
+        assert report["backend"] == host and report["harness"] == runner, report
+    config.write_text(original)
 
 
 def installed_source(root):
@@ -196,7 +271,8 @@ def installed_source(root):
 def environment(root):
     bin_dir = root / "bin"
     bin_dir.mkdir()
-    for name, body in (("codex", FAKE_CODEX), ("pi", FAKE_PI), ("fixture_worker.py", FIXTURE_WORKER)):
+    for name, body in (("codex", FAKE_CODEX), ("pi", FAKE_PI), ("ccsp", FAKE_CCSP),
+                       ("fixture_worker.py", FIXTURE_WORKER)):
         path = bin_dir / name
         path.write_text(body)
         path.chmod(0o755)
@@ -320,7 +396,7 @@ def interrupt_codex_launcher(installed, repo, env):
         (repo / "pause-review").unlink()
 
 
-def exercise_codex(cli, source, repo, env, root, long_wait):
+def exercise_codex(cli, source, repo, env, root, long_wait, external):
     setup_env = {**os.environ, "CODEX_HOME": str(root / "codex-home")}
     (root / "codex-home").mkdir()
     command([cli, "plugin", "marketplace", "add", str(source)], root, setup_env)
@@ -339,8 +415,11 @@ def exercise_codex(cli, source, repo, env, root, long_wait):
         assert partial["status"] == "error" and "Incomplete .code-review/" in partial["error"], partial
         config.unlink()
         assert not codex.authorized and not Path(env["REVIEW_FIXTURE_LOG"]).exists()
-        configure(repo)
-        assert_complete(codex.tool("review_run", kind="working-tree"))
+        configure(repo, external)
+        ordinary = codex.tool("review_run", kind="working-tree")
+        assert_complete(ordinary)
+        if external:
+            assert ordinary["runner"] == "ccsp -g fixture claude"
         assert codex.authorized
         first = codex.tool("review_run", kind="working-tree", mode="adversarial")
         assert_complete(first)
@@ -355,6 +434,8 @@ def exercise_codex(cli, source, repo, env, root, long_wait):
         seen = log.read_text().splitlines().count("correctness")
         assert_complete(codex.tool("review_resume", run_dir=str(run)))
         assert log.read_text().splitlines().count("correctness") == seen
+        if not external and not long_wait:
+            exercise_cross_harness(repo, env)
         print("Codex installed: configuration required, normal, adversarial + re-review, interrupted + resumed",
               flush=True)
         if long_wait:
@@ -366,7 +447,7 @@ def exercise_codex(cli, source, repo, env, root, long_wait):
             print(f"Codex installed: one call returned its final result after {elapsed:.1f}s", flush=True)
 
 
-def exercise_pi(cli, source, repo, env, root):
+def exercise_pi(cli, source, repo, env, root, external):
     home = root / "pi-home"
     home.mkdir()
     git_config = root / "gitconfig"
@@ -420,8 +501,11 @@ def exercise_pi(cli, source, repo, env, root):
     missing = invoke("/code-review working-tree")[0]
     assert missing["status"] == "error" and "Missing .code-review/" in missing["error"], missing
     assert not Path(env["REVIEW_FIXTURE_LOG"]).exists()
-    configure(repo)
-    assert_complete(invoke("/code-review working-tree")[0])
+    configure(repo, external)
+    ordinary = invoke("/code-review working-tree")[0]
+    assert_complete(ordinary)
+    if external:
+        assert ordinary["runner"] == "ccsp -g fixture claude"
     first, second = invoke("/code-review:adversarial working-tree")
     assert_complete(first)
     assert (Path(first["run_dir"]) / "out/candidates-sweep.json").exists()
@@ -444,6 +528,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host", choices=("codex", "pi", "both"), default="both", nargs="?")
     parser.add_argument("--long-wait", action="store_true", help="verify one Codex tool call lasting over 300s")
+    parser.add_argument("--external", action="store_true", help="use the shared external runner on both hosts")
     args = parser.parse_args()
     hosts = ("codex", "pi") if args.host == "both" else (args.host,)
     for host in hosts:
@@ -452,9 +537,14 @@ def main():
         with tempfile.TemporaryDirectory(prefix=f"installed-review-{host}-") as temp:
             root = Path(temp).resolve()
             if host == "codex":
-                exercise_codex(cli, installed_source(root), fixture(root), environment(root), root, args.long_wait)
+                exercise_codex(cli, installed_source(root), fixture(root), environment(root), root,
+                               args.long_wait, args.external)
             else:
-                exercise_pi(cli, installed_source(root), fixture(root), environment(root), root)
+                exercise_pi(cli, installed_source(root), fixture(root), environment(root), root, args.external)
+            if args.external:
+                log = (root / "runners.log").read_text().splitlines()
+                assert log.count("launch") == 4 and log.count("resume") == 1, log
+                print(f"{host}: external orchestrator launched once per round and resumed once")
 
 
 if __name__ == "__main__":
