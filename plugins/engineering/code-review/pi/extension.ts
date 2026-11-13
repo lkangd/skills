@@ -38,8 +38,7 @@ function flags(args: Arguments, keys: (keyof Arguments)[]): string[] {
   });
 }
 
-function launch(argv: string[], cwd: string, signal: AbortSignal | undefined,
-                update: (line: string) => void): Promise<Record<string, unknown>> {
+function launch(argv: string[], cwd: string, signal: AbortSignal | undefined): Promise<Record<string, unknown>> {
   if (signal?.aborted) return Promise.reject(new Error("Review cancelled"));
   return new Promise((resolveResult, reject) => {
     const child = spawn("python3", ["-B", entry, "--repo", cwd, ...argv], {
@@ -48,13 +47,10 @@ function launch(argv: string[], cwd: string, signal: AbortSignal | undefined,
     const abort = () => child.kill("SIGTERM");
     signal?.addEventListener("abort", abort, { once: true });
     let output = "";
-    let pending = "";
+    let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => { output += chunk; });
     child.stderr.setEncoding("utf8").on("data", (chunk) => {
-      pending += chunk;
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-      for (const line of lines) if (line) update(line);
+      stderr = (stderr + chunk).slice(-4000);
     });
     child.once("error", reject);
     child.once("close", (status) => {
@@ -62,7 +58,7 @@ function launch(argv: string[], cwd: string, signal: AbortSignal | undefined,
       try {
         resolveResult(JSON.parse(output));
       } catch {
-        reject(new Error(pending || `Review process exited ${status} without a result`));
+        reject(new Error(stderr.trim() || `Review process exited ${status} without a result`));
       }
     });
   });
@@ -75,6 +71,7 @@ export default function codeReview(pi: ExtensionAPI) {
     model?: string;
     currentRound?: string;
     started: boolean;
+    running?: boolean;
   } | undefined;
 
   function deactivate() {
@@ -91,7 +88,7 @@ export default function codeReview(pi: ExtensionAPI) {
     ["code-review:setup", "setup"],
   ] as const) {
     pi.registerCommand(name, {
-      description: "Review an explicit Git change in the current session",
+      description: "Start or configure a code review",
       handler: async (raw, ctx) => {
         if (process.env.CODE_REVIEW_CHILD) throw new Error("Review workers cannot launch reviews");
         await ctx.waitForIdle();
@@ -105,9 +102,9 @@ export default function codeReview(pi: ExtensionAPI) {
           `Command arguments: ${JSON.stringify(input)}.`,
           `Plugin references are in ${resolve(plugin, "references")}.`,
           "Follow the procedure below. In Pi, call code_review_round with operation run, resume,",
-          "or next in place of review_run, review_resume, or review_next. The tool supplies the",
-          "current Git workspace and waits for the result. If more information is needed, ask",
-          "through the code_review_prompt tool while this invocation is active.",
+          "or next in place of review_run, review_resume, or review_next. It supplies the",
+          "current workspace and returns once the scheduler finishes. Ask setup and review",
+          "questions through code_review_prompt while this invocation is active.",
           "When calling code_review_prompt, use a short question and explicit choices where possible.",
           "", workflow,
         ].join("\n");
@@ -144,11 +141,12 @@ export default function codeReview(pi: ExtensionAPI) {
     description: "Execute one read-only round after an explicit code-review slash command.",
     defaultActive: false,
     parameters,
-    async execute(_id, args, signal, onUpdate, ctx) {
+    async execute(_id, args, signal, _update, ctx) {
       const call = active;
       if (!call || call.session !== ctx.sessionManager.getSessionId() || call.mode === "setup") {
         throw new Error("Start the review with an explicit /code-review command");
       }
+      if (call.running) throw new Error("Wait for the current review round to finish");
       let argv: string[];
       if (args.operation === "run") {
         if (call.started || call.mode === "resume" || !args.kind) {
@@ -167,16 +165,19 @@ export default function codeReview(pi: ExtensionAPI) {
         }
         argv = ["next", ...flags(args, ["fixed", "known_issues"]), "--", call.currentRound];
       }
-      const result = await launch(argv, ctx.cwd, signal, (line) => {
-        onUpdate?.({ content: [{ type: "text", text: line }], details: {} });
-      });
-      if (result.status === "completed") {
-        call.started = true;
-        call.currentRound = String(result.run_dir);
-      } else if (result.status === "incomplete") {
-        deactivate();
+      call.running = true;
+      try {
+        const result = await launch(argv, ctx.cwd, signal);
+        if (result.status === "completed") {
+          call.started = true;
+          call.currentRound = String(result.run_dir);
+        } else if (result.status === "incomplete") {
+          deactivate();
+        }
+        return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      } finally {
+        call.running = false;
       }
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     },
   });
 }

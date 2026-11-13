@@ -10,6 +10,7 @@ allowed-tools:
   - Bash(git status:*)
   - Bash(mkdir:*)
   - Bash(printenv:*)
+  - Bash(python3:*)
   - Bash(test:*)
   - Read
   - Grep
@@ -53,8 +54,8 @@ Raw arguments: `$ARGUMENTS`
 - `-c=N` → concurrency override for this run.
 - `--spec=<path>[,<path>…]` → spec document(s) to review the change against (review-core.md
   §2.5; without the flag, spec sources are resolved from session context or by asking).
-- `resume [<run-dir>]` → do not start a new review: resume a previously failed round per
-  review-core.md §3 "Resuming a failed round". With no run-dir, locate the newest
+- `resume [<run-dir>]` → after validating configuration (§1), resume a previously failed
+  round per review-core.md §3 "Resuming a failed round". With no run-dir, locate the newest
   `.code-review/runs/*/round-*` without a usable result (no non-empty `out/findings.json`,
   no ` ```json ` block in `out/orchestrator.out`) and confirm it with the user, then launch
   the script with `--resume` (background task), wait, and continue at §3 step 4 → §5 → §7.
@@ -69,13 +70,12 @@ Read `PLUGIN_ROOT/references/review-core.md` and execute it in **single-pass mod
 the diff collection, 5-angle reviewer dispatch, and finding verification, and hands you a
 consolidated report:
 
-1. Safety rules (§0), load the shared configuration (§1), or use defaults.
+1. Follow the safety rules (§0) and require the shared configuration (§1), including when resuming.
 2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
    else specs already in this session's context, else ask (default: no spec).
 3. Launch ONE orchestrator via the bundled script with angles
    `correctness, removed-behavior, callers, cleanup, conventions`
    — plus `spec` (with one `--spec-file` per document) when §2.5 resolved spec sources —
-   (§3), or execute the orchestrator procedure yourself if config says `runner: in-session`
-   (§4). Wait for the consolidated, verified (CONFIRMED / PLAUSIBLE) findings.
+   (§3). Yield until the runner reports the consolidated, verified findings.
 4. Verify every surviving finding against the code, then fix / backlog / reject per §5.
 5. Report per §7. Do not commit anything.

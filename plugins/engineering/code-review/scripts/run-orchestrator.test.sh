@@ -95,6 +95,22 @@ run_launcher() {
   )
 }
 
+CONFIG_CLI="$SCRIPT_DIR/review.py"
+if run_launcher "$TMP_ROOT/missing-config" 2>"$TMP_ROOT/config-error"; then
+  fail "launcher accepted missing configuration"
+fi
+grep -Fq 'Missing .code-review/config.local.json' "$TMP_ROOT/config-error" \
+  || fail "launcher did not explain missing configuration"
+[ ! -e "$TMP_ROOT/missing-config" ] || fail "launcher created a round without configuration"
+python3 -B "$CONFIG_CLI" --repo "$REPO" config-template | \
+  python3 -B "$CONFIG_CLI" --repo "$REPO" config-save >/dev/null
+if run_launcher "$TMP_ROOT/in-session" HEAD correctness ' in-session ' 2>"$TMP_ROOT/runner-error"; then
+  fail "launcher accepted an in-session runner"
+fi
+grep -Fq 'external Claude runner is required' "$TMP_ROOT/runner-error" \
+  || fail "launcher did not explain invalid runner"
+[ ! -e "$TMP_ROOT/in-session" ] || fail "launcher created a round without an external runner"
+
 printf '%s\n' 'small change' >> "$REPO/example.txt"
 git -C "$REPO" add example.txt
 git -C "$REPO" commit -qm small

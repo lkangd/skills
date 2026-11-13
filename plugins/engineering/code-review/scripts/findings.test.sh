@@ -775,11 +775,11 @@ extract_json_example() {
   printf '%s' "$block"
 }
 
-# The receipt protocol has exactly one home. Every angle prompt takes it by reference, and both
-# reviewer definitions — external subagent and in-session agent — must still mandate the same
-# final-message shape findings.sh parses.
+# Every angle prompt takes the shared receipt contract by reference. The launcher must
+# tell reviewers to return the same final-message shape findings.sh parses.
 run_contract_test() {
-  local angle example fragment="$PLUGIN_ROOT/references/receipt-contract.md" source
+  local angle example fragment="$PLUGIN_ROOT/references/receipt-contract.md"
+  local source="$PLUGIN_ROOT/scripts/run-orchestrator.sh"
   [ -r "$fragment" ] || fail "the shared receipt contract fragment is missing"
   grep -Fq '{"status":"completed","findings":[]}' "$fragment" \
     || fail "the receipt contract fragment does not state the zero-finding receipt"
@@ -797,12 +797,10 @@ run_contract_test() {
       || fail "$(basename "$angle") does not show a valid completed receipt schema"
   done
 
-  for source in "$PLUGIN_ROOT/agents/reviewer.md" "$PLUGIN_ROOT/scripts/run-orchestrator.sh"; do
-    grep -Fq '{"status":"completed","findings":[]}' "$source" \
-      || fail "$(basename "$source") does not carry the zero-finding receipt contract"
-    grep -Fq 'entire final message' "$source" \
-      || fail "$(basename "$source") does not mandate the receipt as the entire final message"
-  done
+  grep -Fq '{"status":"completed","findings":[]}' "$source" \
+    || fail "$(basename "$source") does not carry the zero-finding receipt contract"
+  grep -Fq 'entire final message' "$source" \
+    || fail "$(basename "$source") does not mandate the receipt as the entire final message"
 }
 
 run_empty_receipt_test

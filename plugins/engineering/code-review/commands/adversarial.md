@@ -10,6 +10,7 @@ allowed-tools:
   - Bash(git status:*)
   - Bash(mkdir:*)
   - Bash(printenv:*)
+  - Bash(python3:*)
   - Bash(test:*)
   - Read
   - Grep
@@ -51,7 +52,7 @@ plugin install could not be located.
 Raw arguments: `$ARGUMENTS`
 
 - `-c=N` → concurrency override for this run.
-- `--max-rounds=N` → loop cap override (config default: 3).
+- `--max-rounds=N` → loop cap override.
 - `--spec=<path>[,<path>…]` → spec document(s) to review the change against (review-core.md
   §2.5; without the flag, spec sources are resolved from session context or by asking).
 - Everything else is the **review target** (审查内容): commit sha(s) or range, `staged`,
@@ -64,15 +65,14 @@ Read `PLUGIN_ROOT/references/review-core.md` and execute it in **loop mode**. Yo
 not orchestrate the reviews — each round launches one orchestrator session that does the diff
 collection, reviewer dispatch, and finding verification, and hands you a consolidated report:
 
-1. Safety rules (§0), load the shared configuration (§1), or use defaults.
+1. Follow the safety rules (§0) and require the shared configuration (§1).
 2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
    else specs already in this session's context, else ask (default: no spec).
 3. **Round 1**: launch ONE orchestrator with angles
    `correctness, removed-behavior, callers, cleanup, conventions, design, pitfalls, wrapper`
    — plus `spec` (with one `--spec-file` per document) when §2.5 resolved spec sources —
-   (§3) — the orchestrator also runs a post-verification gap sweep in this mode — or execute
-   the orchestrator procedure yourself if config says `runner: in-session` (§4). Then verify
-   the surviving (CONFIRMED / PLAUSIBLE) findings and fix / backlog / reject per §5.
+   (§3). The orchestrator also runs a post-verification gap sweep in this mode.
+   Yield until it returns the verified findings, then fix / backlog / reject per §5.
 4. **Rounds 2..max_rounds**: follow the loop protocol (§6) exactly — continue only while the
    previous round produced confirmed major/critical findings that you fixed; each later round
    launches one orchestrator with angles `re-review` on the cumulative diff, with the

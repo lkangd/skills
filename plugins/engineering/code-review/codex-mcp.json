@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "code-review": {
+      "command": "python3",
+      "args": ["-B", "scripts/review_mcp.py"],
+      "cwd": ".",
+      "tool_timeout_sec": 86400
+    }
+  }
+}

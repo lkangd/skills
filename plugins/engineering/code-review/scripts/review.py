@@ -18,9 +18,9 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from review_workspace import (BACKENDS, DEEP, LEVELS, NORMAL, ROOT, RUNS, Change,
+from review_workspace import (BACKENDS, CONFIG_TEMPLATE, DEEP, LEVELS, NORMAL, ROOT, RUNS, Change,
                               atomic_text, balance, complexity, conventions, diff_changes,
-                              fingerprints, read_json, render_prompt, repo_root, settings,
+                              fingerprints, read_json, render_prompt, repo_root, save_settings, settings,
                               snapshot, target, untracked, write_json)
 from review_workers import Workers, claude_profiles, receipt, resolve_models, verdicts
 
@@ -453,7 +453,9 @@ def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--repo", type=Path, default=Path.cwd())
     commands = cli.add_subparsers(dest="command", required=True)
-    commands.add_parser("config", help="show effective settings")
+    commands.add_parser("config", help="validate and show the saved configuration")
+    commands.add_parser("config-template", help="show a proposed configuration for setup")
+    commands.add_parser("config-save", help="validate and save the user-confirmed JSON from stdin")
     claude = commands.add_parser("claude-models")
     claude.add_argument("--runner", required=True)
     plan = commands.add_parser("claude-plan")
@@ -489,8 +491,12 @@ def main():
         if os.environ.get("CODE_REVIEW_CHILD"):
             raise ValueError("Review workers cannot launch code review")
         repo = repo_root(args.repo)
-        if args.command == "config":
+        if args.command == "config-template":
+            emit(CONFIG_TEMPLATE)
+        elif args.command == "config":
             emit(settings(repo))
+        elif args.command == "config-save":
+            emit(save_settings(repo, json.load(sys.stdin)))
         elif args.command == "claude-models":
             emit(claude_profiles(repo, args.runner, settings(repo)["claude"]))
         elif args.command == "claude-plan":
@@ -498,8 +504,10 @@ def main():
         elif args.command == "run":
             return start(repo, args, settings(repo))
         elif args.command == "resume":
+            settings(repo)
             return continue_run(repo, args)
         elif args.command == "next":
+            settings(repo)
             return next_round(repo, args)
     except (OSError, ValueError, InterruptedError, subprocess.SubprocessError) as error:
         emit({"status": "error", "error": str(error) or "interrupted"})

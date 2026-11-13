@@ -66,8 +66,8 @@ def receipt(prompt, wrapped=False):
     with open(Path(__file__).resolve().parents[1] / "workers.log", "a") as output:
         output.write(task + "\n")
     marker = Path("pause-review")
-    if marker.exists() and task != "correctness":
-        time.sleep(20)
+    if marker.exists() and task != "correctness" and not task.startswith("verify-"):
+        time.sleep(float(marker.read_text() or "20"))
     if task.startswith("verify-"):
         batch = prompt.split("## Candidate batch\n", 1)[1]
         candidates = json.JSONDecoder().raw_decode(batch)[0]
@@ -164,6 +164,19 @@ def reset(repo):
     (repo / "math.py").write_text("def increment(n):\n    return n - 1\n")
 
 
+def configure(repo):
+    argv = [sys.executable, "-B", str(PLUGIN / "scripts/review.py"), "--repo", str(repo)]
+    proposal = command([*argv, "config-template"], repo)
+    config = repo / ".code-review/config.local.json"
+    assert not config.exists()
+    partial = subprocess.run([*argv, "config-save"], cwd=repo, input="{}",
+                             capture_output=True, text=True)
+    assert partial.returncode and not config.exists(), partial
+    saved = subprocess.run([*argv, "config-save"], cwd=repo, input=proposal,
+                           capture_output=True, text=True, check=True)
+    assert json.loads(config.read_text()) == json.loads(saved.stdout) == json.loads(proposal)
+
+
 def installed_source(root):
     source = root / "source"
     source.mkdir()
@@ -205,13 +218,13 @@ class Codex:
     def send(self, body):
         self.process.stdin.write(json.dumps(body).encode() + b"\n")
 
-    def call(self, method, params=None):
+    def call(self, method, params=None, timeout=45):
         self.seq += 1
         request = {"jsonrpc": "2.0", "id": self.seq, "method": method}
         if params is not None:
             request["params"] = params
         self.send(request)
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + timeout
         while self.selector.select(max(0, deadline - time.monotonic())):
             raw = self.process.stdout.readline()
             if not raw:
@@ -234,8 +247,11 @@ class Codex:
                                                "approvalPolicy": "on-request"})["thread"]["id"]
         status = self.call("mcpServerStatus/list", {"threadId": self.thread})
         server = next(entry for entry in status["data"] if "code-review" in entry["name"])
-        assert "review_run" in server["tools"], server
+        assert set(server["tools"]) == {"review_run", "review_resume", "review_next"}, server
         self.server = server["name"]
+        skills = self.call("skills/list", {"cwds": [str(self.repo)]})
+        assert any(skill["name"] == "code-review:code-review"
+                   for entry in skills["data"] for skill in entry["skills"]), skills
         return self
 
     def __exit__(self, *_):
@@ -243,17 +259,12 @@ class Codex:
         self.process.terminate()
         self.process.communicate(timeout=10)
 
-    def tool(self, name, **args):
+    def tool(self, name, timeout=45, **args):
         response = self.call("mcpServer/tool/call", {
             "threadId": self.thread, "server": self.server, "tool": name,
             "arguments": {"workspace": str(self.repo), **args},
-        })
+        }, timeout=timeout)
         return json.loads(response["content"][0]["text"])
-
-    def wait(self, result):
-        while result["status"] == "running":
-            result = self.tool("review_status", job=result["job"])
-        return result
 
 
 def assert_complete(result, expected_round=1, count=1):
@@ -278,36 +289,81 @@ def wait_checkpoint(repo, known=()):
     raise AssertionError("The first review task did not checkpoint")
 
 
-def exercise_codex(cli, source, repo, env, root):
+def interrupt_codex_launcher(installed, repo, env):
+    launcher = installed / "scripts/review_mcp.py"
+    proc = subprocess.Popen([sys.executable, "-B", str(launcher)], cwd=installed, env=env,
+                            bufsize=0, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    def send(body):
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", **body}).encode() + b"\n")
+
+    known = set((repo / ".code-review/runs").glob("*/round-1/out/candidates-correctness.json"))
+    (repo / "pause-review").touch()
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+            send({"id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}})
+            assert selector.select(5) and json.loads(proc.stdout.readline())["id"] == 1
+            send({"id": 2, "method": "tools/call", "params": {"name": "review_run", "arguments": {
+                "workspace": str(repo), "kind": "working-tree", "concurrency": 2}}})
+            run = wait_checkpoint(repo, known)
+            assert not selector.select(0), "Review returned before the round finished"
+            send({"method": "notifications/cancelled", "params": {"requestId": 2}})
+            # An idle tools/list reply proves the launcher has stopped and joined its runner.
+            send({"id": 3, "method": "tools/list"})
+            assert selector.select(10) and json.loads(proc.stdout.readline())["id"] == 3
+            assert not (run / "out/findings.json").exists(), run
+            return run
+    finally:
+        proc.terminate()
+        proc.communicate(timeout=10)
+        (repo / "pause-review").unlink()
+
+
+def exercise_codex(cli, source, repo, env, root, long_wait):
     setup_env = {**os.environ, "CODEX_HOME": str(root / "codex-home")}
     (root / "codex-home").mkdir()
     command([cli, "plugin", "marketplace", "add", str(source)], root, setup_env)
     installed = json.loads(command([cli, "plugin", "add", "code-review@lkangd-skills", "--json"],
                                    root, setup_env))
-    assert (Path(installed["installedPath"]) / "skills/code-review/SKILL.md").is_file(), installed
+    plugin_root = Path(installed["installedPath"])
+    assert (plugin_root / "skills/code-review/SKILL.md").is_file(), installed
     env = {**env, "CODEX_HOME": setup_env["CODEX_HOME"]}
     with Codex(cli, repo, env) as codex:
-        assert_complete(codex.wait(codex.tool("review_run", kind="working-tree")))
+        missing = codex.tool("review_run", kind="working-tree")
+        assert missing["status"] == "error" and "Missing .code-review/" in missing["error"], missing
+        config = repo / ".code-review/config.local.json"
+        config.parent.mkdir()
+        config.write_text("{}")
+        partial = codex.tool("review_run", kind="working-tree")
+        assert partial["status"] == "error" and "Incomplete .code-review/" in partial["error"], partial
+        config.unlink()
+        assert not codex.authorized and not Path(env["REVIEW_FIXTURE_LOG"]).exists()
+        configure(repo)
+        assert_complete(codex.tool("review_run", kind="working-tree"))
         assert codex.authorized
-        first = codex.wait(codex.tool("review_run", kind="working-tree", mode="adversarial"))
+        first = codex.tool("review_run", kind="working-tree", mode="adversarial")
         assert_complete(first)
         assert (Path(first["run_dir"]) / "out/candidates-sweep.json").exists()
         (repo / "math.py").write_text("def increment(n):\n    return n + 1\n")
-        assert_complete(codex.wait(codex.tool("review_next", run_dir=first["run_dir"],
-                                            fixed=[1], known_issues="- [fixed] math.py")), 2, 0)
+        assert_complete(codex.tool("review_next", run_dir=first["run_dir"],
+                                   fixed=[1], known_issues="- [fixed] math.py"), 2, 0)
         reset(repo)
-        known = set((repo / ".code-review/runs").glob("*/round-1/out/candidates-correctness.json"))
-        (repo / "pause-review").touch()
-        job = codex.tool("review_run", kind="working-tree", concurrency=2)
-        run = wait_checkpoint(repo, known)
-        interrupted = codex.tool("review_cancel", job=job["job"])
-        assert interrupted["status"] == "incomplete", interrupted
-        (repo / "pause-review").unlink()
+        run = interrupt_codex_launcher(plugin_root, repo, env)
+        assert str(run) in codex.tool("review_resume")["run_dirs"]
         log = Path(env["REVIEW_FIXTURE_LOG"])
         seen = log.read_text().splitlines().count("correctness")
-        assert_complete(codex.wait(codex.tool("review_resume", run_dir=str(run))))
+        assert_complete(codex.tool("review_resume", run_dir=str(run)))
         assert log.read_text().splitlines().count("correctness") == seen
-    print("Codex installed: normal, adversarial + re-review, interrupted + resumed")
+        print("Codex installed: configuration required, normal, adversarial + re-review, interrupted + resumed",
+              flush=True)
+        if long_wait:
+            (repo / "pause-review").write_text("305")
+            start = time.monotonic()
+            assert_complete(codex.tool("review_run", timeout=360, kind="working-tree"))
+            elapsed = time.monotonic() - start
+            assert elapsed > 300, elapsed
+            print(f"Codex installed: one call returned its final result after {elapsed:.1f}s", flush=True)
 
 
 def exercise_pi(cli, source, repo, env, root):
@@ -346,6 +402,8 @@ def exercise_pi(cli, source, repo, env, root):
                         break
                     event = json.loads(raw)
                     logs.append(event)
+                    assert not (event.get("type") == "tool_execution_update"
+                                and event.get("toolName") == "code_review_round"), event
                     if event.get("type") == "tool_execution_end" and event.get("toolName") == "code_review_round":
                         result = event.get("result", {})
                         if result.get("details"):
@@ -359,6 +417,10 @@ def exercise_pi(cli, source, repo, env, root):
             proc.terminate()
             stdout, stderr = proc.communicate(timeout=10)
         raise AssertionError(f"Pi did not finish {text}\n{logs[-12:]}\n{stdout.decode()}\n{stderr.decode()}")
+    missing = invoke("/code-review working-tree")[0]
+    assert missing["status"] == "error" and "Missing .code-review/" in missing["error"], missing
+    assert not Path(env["REVIEW_FIXTURE_LOG"]).exists()
+    configure(repo)
     assert_complete(invoke("/code-review working-tree")[0])
     first, second = invoke("/code-review:adversarial working-tree")
     assert_complete(first)
@@ -375,12 +437,13 @@ def exercise_pi(cli, source, repo, env, root):
     seen = log.read_text().splitlines().count("correctness")
     assert_complete(invoke(f"/code-review resume {run}")[0])
     assert log.read_text().splitlines().count("correctness") == seen
-    print("Pi Git-installed: normal, adversarial + re-review, interrupted + resumed")
+    print("Pi Git-installed: configuration required, normal, adversarial + re-review, interrupted + resumed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("host", choices=("codex", "pi", "both"), default="both", nargs="?")
+    parser.add_argument("--long-wait", action="store_true", help="verify one Codex tool call lasting over 300s")
     args = parser.parse_args()
     hosts = ("codex", "pi") if args.host == "both" else (args.host,)
     for host in hosts:
@@ -389,7 +452,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix=f"installed-review-{host}-") as temp:
             root = Path(temp).resolve()
             if host == "codex":
-                exercise_codex(cli, installed_source(root), fixture(root), environment(root), root)
+                exercise_codex(cli, installed_source(root), fixture(root), environment(root), root, args.long_wait)
             else:
                 exercise_pi(cli, installed_source(root), fixture(root), environment(root), root)
 

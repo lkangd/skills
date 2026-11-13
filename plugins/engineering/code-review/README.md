@@ -21,8 +21,8 @@ and Pi 1.5.2. Pi Git installation also uses its configured package manager.
 For development, add the repository checkout as the Codex marketplace or run
 `pi install /absolute/path/to/agent-skills`. Start a new host session in the project
 after installation. The Codex entry uses the bundled local MCP launcher. Approve the
-displayed repository when it prompts on first use. The Pi extension provides the
-command and calls the shared scheduler from the current session.
+displayed repository when it prompts on first use. Each command launches one independent
+scheduler per round. The invoking session waits for its final result before acting on findings.
 
 ## Review and resume
 
@@ -33,7 +33,8 @@ already in the conversation. Use `-c=N` for a per-run concurrency override and
 `--max-rounds=N` in adversarial mode.
 
 A run writes its plan, task receipts and final `out/findings.json` under
-`.code-review/runs/`. Resume via `/code-review resume [<run-dir>]` in Claude Code or
+`.code-review/runs/`. Use the host's stop control to interrupt a round. Resume via
+`/code-review resume [<run-dir>]` in Claude Code or
 Pi, or the Codex skill's `resume` argument. A portable run resumes with its original
 Codex or Pi backend, even when the other host initiates recovery. Its backend CLI must
 be available and authenticated. Claude checkpoints use the Claude command and retain
@@ -48,9 +49,11 @@ handled findings. The plugin leaves staging and commits to the user.
 
 ## Configuration and model selection
 
-All hosts use [.code-review/config.local.json](references/configuration.md) in the
-reviewed project. Setup is optional. Claude supports `claude.runner` set to a
-compatible prefix such as `ccsp -g <preset> claude`, or `in-session`.
+All hosts require [.code-review/config.local.json](references/configuration.md) in the
+reviewed project. When it is missing or incomplete, provide or accept the proposed
+settings and confirm the complete JSON before the first round. Run the setup command
+again to edit it. Claude supports an external runner such as `claude` or a compatible
+prefix such as `ccsp -g <preset> claude`.
 
 Tasks are classified as high, medium or low complexity. The backend checks its
 available models and supported reasoning settings when it can. Configure per-host
@@ -74,3 +77,6 @@ It installs both entry points in isolated homes and exercises normal review, the
 adversarial fix and re-review loop, and interruption with checkpoint reuse. The
 suite uses deterministic test models. Run the existing Bash suites for Claude
 launcher and receipt compatibility.
+
+Use `python3 -B evaluation/installed_workflows.py codex --long-wait` to test a single
+installed MCP call that stays open for over five minutes.

@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from review_workspace import LEVELS, write_json
+from review_workspace import LEVELS, validate_claude_runner, write_json
 
 WORKER_ENV = {**os.environ, "CODE_REVIEW_CHILD": "1"}
 CODEX_FLAGS = [
@@ -138,27 +138,27 @@ def codex_context_windows(repo):
 def claude_profiles(repo, runner, config):
     default, definitions = None, {}
     source = "Claude runner defaults"
-    if runner != "in-session":
-        argv = [*shlex.split(runner), "--bare", "-p", "--input-format", "stream-json",
-                "--output-format", "stream-json", "--verbose"]
+    validate_claude_runner(runner)
+    argv = [*shlex.split(runner), "--bare", "-p", "--input-format", "stream-json",
+            "--output-format", "stream-json", "--verbose"]
+    try:
+        child = subprocess.Popen(argv, cwd=repo, env=WORKER_ENV, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
         try:
-            child = subprocess.Popen(argv, cwd=repo, env=WORKER_ENV, stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                     start_new_session=True)
-            try:
-                result = response(child, {"type": "control_request", "request_id": "models",
-                    "request": {"subtype": "initialize", "hooks": {}, "sdkMcpServers": []}}, stream=True)
-                definitions = {item["value"]: item for item in result["models"]}
-                default = definitions.get("default", {})
-                if "--model" in argv and argv.index("--model") + 1 < len(argv):
-                    default = definitions.get(argv[argv.index("--model") + 1], {})
-                source = "Claude SDK initialization"
-            finally:
-                if child.poll() is None:
-                    terminate(child)
-                    child.communicate()
-        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
-            pass
+            result = response(child, {"type": "control_request", "request_id": "models",
+                "request": {"subtype": "initialize", "hooks": {}, "sdkMcpServers": []}}, stream=True)
+            definitions = {item["value"]: item for item in result["models"]}
+            default = definitions.get("default", {})
+            if "--model" in argv and argv.index("--model") + 1 < len(argv):
+                default = definitions.get(argv[argv.index("--model") + 1], {})
+            source = "Claude SDK initialization"
+        finally:
+            if child.poll() is None:
+                terminate(child)
+                child.communicate()
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
     profiles = {}
     for level in LEVELS:
         override = config.get("models", {}).get(level, {})

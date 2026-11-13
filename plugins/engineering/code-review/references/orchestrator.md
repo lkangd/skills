@@ -101,8 +101,7 @@ calls. Do not read, trim or rewrite it — that used to be your Step 1 and cost 
 several hundred thousand cache-read tokens per round for a file the repo fully determines.
 Your first message of the round is the Step 2 dispatch (after `findings.sh pending`).
 
-**Addendum fallback** (only if the file is missing — in-session mode, or a resume of a run
-from before the launcher owned it; the launch prompt or `ls RUN_DIR` tells you): write it
+**Addendum fallback** (when resuming a run from before the launcher created the file): write it
 yourself before the first dispatch in one Read-batch + one Write. Section `## A. Project
 conventions`: the convention documents named above, each capped at ~300 lines, or one line
 saying none exist. Section `## B. Untracked files`: for `HEAD` / `HEAD -- paths` targets the

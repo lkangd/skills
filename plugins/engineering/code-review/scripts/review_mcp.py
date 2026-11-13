@@ -5,19 +5,19 @@ import hashlib
 import json
 import os
 import queue
-import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path
 
-from review_workspace import ROOT, repo_root, write_json, read_json
+from review_workspace import ROOT, read_json, repo_root, settings, write_json
 
 TOOLS = {
-    "review_run": ("Start one read-only code review round.", {
+    "review_run": ("Run one read-only code review round and wait for the final result.", {
         "workspace": {"type": "string"}, "kind": {"enum": [
             "working-tree", "staged", "files", "commit", "branch"]},
         "values": {"type": "array", "items": {"type": "string"}},
@@ -26,20 +26,14 @@ TOOLS = {
         "spec_context": {"type": "string"}, "concurrency": {"type": "integer", "minimum": 0},
         "max_rounds": {"type": "integer", "minimum": 1},
     }, ["workspace", "kind"]),
-    "review_resume": ("List or resume review checkpoints in this repository.", {
+    "review_resume": ("List incomplete rounds, or resume the selected round and wait for its final result.", {
         "workspace": {"type": "string"}, "run_dir": {"type": "string"},
     }, ["workspace"]),
-    "review_next": ("Start the next adversarial round after fixing a major or critical finding.", {
+    "review_next": ("Run the next adversarial round and wait for the final result.", {
         "workspace": {"type": "string"}, "run_dir": {"type": "string"},
         "fixed": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
         "known_issues": {"type": "string"},
     }, ["workspace", "run_dir", "fixed", "known_issues"]),
-    "review_status": ("Check a scheduled review. Wait up to 20 seconds for a result.", {
-        "workspace": {"type": "string"}, "job": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-    }, ["workspace", "job"]),
-    "review_cancel": ("Interrupt a scheduled review and retain its checkpoints.", {
-        "workspace": {"type": "string"}, "job": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-    }, ["workspace", "job"]),
 }
 
 
@@ -48,7 +42,7 @@ def descriptor(name, spec):
     return {"name": name, "description": description,
             "inputSchema": {"type": "object", "properties": fields, "required": required,
                             "additionalProperties": False},
-            "annotations": {"readOnlyHint": name == "review_status",
+            "annotations": {"readOnlyHint": False,
                             "destructiveHint": False, "openWorldHint": True}}
 
 
@@ -74,8 +68,6 @@ def validate(name, arguments):
                 or expected is int and item < field["items"]["minimum"] for item in value
             ):
                 raise ValueError(f"Invalid {key}")
-        if "pattern" in field and not re.fullmatch(field["pattern"], value):
-            raise ValueError(f"Invalid {key}")
 
 
 def options(args, names):
@@ -91,17 +83,25 @@ def options(args, names):
 
 class Launcher:
     def __init__(self):
-        self.data = Path(os.environ["PLUGIN_DATA"])
         self.child_env = dict(os.environ)
-        # Codex starts plugin stdio processes with a filtered environment. Its installed
-        # cache provides the native config root when CODEX_HOME is absent.
+        data = os.environ.get("PLUGIN_DATA")
         for parent in ROOT.parents:
             if parent.name == "cache" and parent.parent.name == "plugins":
                 self.child_env.setdefault("CODEX_HOME", str(parent.parent.parent))
+                if data is None:
+                    # Preserve repository approvals from the portable package.
+                    market = ROOT.parent.parent.name
+                    plugin = ROOT.parent.name
+                    identity = hashlib.sha256(f"{market}\0{plugin}".encode()).hexdigest()[:32]
+                    data = parent.parent / "data" / "agent-plugins" / identity
                 break
+        if data is None:
+            raise ValueError("Install the code-review plugin before starting its launcher")
+        self.data = Path(data)
         self.data.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.jobs = {}
         self.inbox = queue.Queue()
+        self.deferred = []
+        self.closing = False
 
     def send(self, message):
         print(json.dumps({"jsonrpc": "2.0", **message}, ensure_ascii=True), flush=True)
@@ -109,26 +109,25 @@ class Launcher:
     def read(self):
         for line in sys.stdin:
             try:
-                self.inbox.put(json.loads(line))
+                message = json.loads(line)
             except ValueError:
-                pass
+                continue
+            if isinstance(message, dict):
+                self.inbox.put(message)
         self.inbox.put(None)
 
-    def scope(self, name, args):
-        workspace = Path(args["workspace"])
+    def scope(self, workspace, request_id):
+        workspace = Path(workspace)
         if not workspace.is_absolute():
             raise ValueError("Pass the absolute Git root from the current Codex workspace")
         repo = repo_root(workspace)
         if repo != workspace.resolve():
             raise ValueError("Pass the Git root of the workspace")
-        if name in ("review_status", "review_cancel") and args["job"] not in self.jobs:
-            raise ValueError("This job belongs to a different launcher session. Use review_resume.")
+        settings(repo)
         key = hashlib.sha256(os.fsencode(repo)).hexdigest()
         authorization = self.data / f"workspace-{key}.json"
         if authorization.exists() and read_json(authorization) == {"workspace": str(repo)}:
             return repo
-        if name in ("review_status", "review_cancel"):
-            raise ValueError("This repository has no review authorization")
         request = f"workspace-{uuid.uuid4().hex}"
         self.send({
             "id": request, "method": "elicitation/create",
@@ -138,46 +137,46 @@ class Launcher:
                                            "properties": {"authorize": {"type": "boolean",
                                                "title": "Authorize this repository"}}}},
         })
-        deferred = []
         deadline = time.monotonic() + 120
-        try:
-            while True:
-                reply = self.inbox.get(timeout=max(0, deadline - time.monotonic()))
-                if reply is None:
-                    self.inbox.put(None)
-                    raise ValueError("Codex closed before approving the repository")
-                if reply.get("id") == request and "method" not in reply:
-                    answer = reply.get("result", {})
-                    content = answer.get("content") or {}
-                    if answer.get("action") != "accept" or content.get("authorize") is not True:
-                        raise ValueError("Repository approval was declined")
-                    write_json(authorization, {"workspace": str(repo)})
-                    return repo
-                deferred.append(reply)
-        except queue.Empty:
-            raise ValueError("Repository approval timed out") from None
-        finally:
-            for reply in deferred:
-                self.inbox.put(reply)
+        while time.monotonic() < deadline:
+            reply = self.receive_during_call(request_id, min(1, deadline - time.monotonic()))
+            if reply is None:
+                continue
+            if reply.get("id") != request or "method" in reply:
+                self.deferred.append(reply)
+                continue
+            answer = reply.get("result", {})
+            content = answer.get("content") or {}
+            if answer.get("action") != "accept" or content.get("authorize") is not True:
+                raise ValueError("Repository approval was declined")
+            write_json(authorization, {"workspace": str(repo)})
+            return repo
+        raise ValueError("Repository approval timed out")
 
-    def call(self, name, args):
+    def receive_during_call(self, request_id, timeout):
+        if self.closing:
+            raise InterruptedError
+        try:
+            message = self.inbox.get(timeout=max(0, timeout))
+        except queue.Empty:
+            return None
+        if message is None:
+            self.closing = True
+            raise InterruptedError
+        if message.get("method") == "notifications/cancelled":
+            cancelled = message.get("params", {}).get("requestId")
+            if cancelled == request_id:
+                raise InterruptedError
+            self.deferred = [pending for pending in self.deferred if pending.get("id") != cancelled]
+            return None
+        if message.get("method") == "ping" and "id" in message:
+            self.send({"id": message["id"], "result": {}})
+            return None
+        return message
+
+    def call(self, name, args, request_id):
         validate(name, args)
-        repo = self.scope(name, args)
-        if name in ("review_status", "review_cancel"):
-            job = args["job"]
-            if job not in self.jobs or self.jobs[job][0] != repo:
-                raise ValueError("This job belongs to a different launcher session or repository. Use review_resume.")
-            _, process, result = self.jobs[job]
-            if name == "review_cancel" and process.poll() is None:
-                process.send_signal(signal.SIGTERM)
-            try:
-                process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                return {"status": "running", "job": job}
-            try:
-                return read_json(result)
-            except (ValueError, OSError):
-                return {"status": "error", "error": f"Review process exited {process.returncode}. Use review_resume."}
+        repo = self.scope(args["workspace"], request_id)
         if name == "review_run":
             argv = ["run", "--backend", "codex", *options(args, [
                 "mode", "description", "spec", "spec_context", "concurrency", "max_rounds"]),
@@ -186,54 +185,66 @@ class Launcher:
             argv = ["resume", "--", *([args["run_dir"]] if args.get("run_dir") else [])]
         else:
             argv = ["next", *options(args, ["fixed", "known_issues"]), "--", args["run_dir"]]
-        if name == "review_resume" and not args.get("run_dir"):
-            completed = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/review.py"),
-                                        "--repo", str(repo), *argv], capture_output=True, timeout=15)
-            return json.loads(completed.stdout)
-        job = uuid.uuid4().hex
-        result = self.data / f"job-{job}.json"
-        with result.open("wb") as output:
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", dir=self.data) as output:
             process = subprocess.Popen(
                 [sys.executable, "-B", str(ROOT / "scripts/review.py"), "--repo", str(repo), *argv],
                 cwd=repo, env=self.child_env, stdin=subprocess.DEVNULL, stdout=output, stderr=sys.stderr,
-                start_new_session=True,
             )
-        self.jobs[job] = (repo, process, result)
-        return {"status": "running", "job": job}
+            try:
+                while process.poll() is None:
+                    message = self.receive_during_call(request_id, 0.25)
+                    if message is not None:
+                        self.deferred.append(message)
+                output.seek(0)
+                try:
+                    return json.load(output)
+                except ValueError as error:
+                    raise ValueError(
+                        f"Review runner exited {process.returncode} without a result. Use review_resume."
+                    ) from error
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait()
+
+    def stop(self, *_):
+        self.closing = True
+        self.inbox.put(None)
 
     def serve(self):
+        signal.signal(signal.SIGTERM, self.stop)
+        signal.signal(signal.SIGINT, self.stop)
         threading.Thread(target=self.read, daemon=True).start()
-        try:
-            while (request := self.inbox.get()) is not None:
-                method = request.get("method")
-                if "id" not in request:
+        while not self.closing:
+            request = self.deferred.pop(0) if self.deferred else self.inbox.get()
+            if request is None:
+                break
+            method = request.get("method")
+            if "id" not in request or method is None:
+                continue
+            request_id = request["id"]
+            params = request.get("params", {})
+            if method == "initialize":
+                result = {"protocolVersion": params.get("protocolVersion", "2025-03-26"),
+                          "capabilities": {"tools": {}},
+                          "serverInfo": {"name": "code-review", "version": "1.0.1"}}
+            elif method == "ping":
+                result = {}
+            elif method == "tools/list":
+                result = {"tools": [descriptor(name, spec) for name, spec in TOOLS.items()]}
+            elif method == "tools/call":
+                try:
+                    data = self.call(params.get("name"), params.get("arguments", {}), request_id)
+                except InterruptedError:
                     continue
-                request_id = request["id"]
-                params = request.get("params", {})
-                if method == "initialize":
-                    result = {"protocolVersion": params.get("protocolVersion", "2025-03-26"),
-                              "capabilities": {"tools": {}},
-                              "serverInfo": {"name": "code-review", "version": "1.0.0"}}
-                elif method == "ping":
-                    result = {}
-                elif method == "tools/list":
-                    result = {"tools": [descriptor(name, spec) for name, spec in TOOLS.items()]}
-                elif method == "tools/call":
-                    try:
-                        data = self.call(params.get("name"), params.get("arguments", {}))
-                    except (ValueError, OSError, subprocess.SubprocessError) as error:
-                        data = {"status": "error", "error": str(error)}
-                    result = {"content": [{"type": "text", "text": json.dumps(data)}],
-                              "isError": data.get("status") == "error"}
-                else:
-                    self.send({"id": request_id, "error": {"code": -32601, "message": "Method not found"}})
-                    continue
-                self.send({"id": request_id, "result": result})
-        finally:
-            for _, process, result in self.jobs.values():
-                if process.poll() is None:
-                    process.send_signal(signal.SIGTERM)
-                result.unlink(missing_ok=True)
+                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                    data = {"status": "error", "error": str(error)}
+                result = {"content": [{"type": "text", "text": json.dumps(data)}],
+                          "isError": data.get("status") == "error"}
+            else:
+                self.send({"id": request_id, "error": {"code": -32601, "message": "Method not found"}})
+                continue
+            self.send({"id": request_id, "result": result})
 
 
 if __name__ == "__main__":

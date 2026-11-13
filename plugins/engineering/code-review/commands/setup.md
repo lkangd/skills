@@ -10,8 +10,5 @@ allowed-tools:
 ---
 
 Resolve the plugin root with `printenv CLAUDE_PLUGIN_ROOT`. If that value is missing,
-locate the newest installed code-review plugin under the Claude plugin cache. Read
-`references/configuration.md` under the resolved root and follow its setup procedure.
-
-Offer the configured Claude runner, bare `claude`, a compatible command prefix such as
-`ccsp -g <preset> claude`, and `in-session`. Save the shared JSON settings.
+locate the newest installed code-review plugin under the Claude plugin cache. Follow
+`references/configuration.md` under that root for explicit setup.

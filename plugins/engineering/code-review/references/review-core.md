@@ -26,26 +26,22 @@ orchestrator session launched through the configured runner. Your job is only:
 3. act on its consolidated report (verify → fix / backlog / reject),
 4. report to the user.
 
-Exception: when config sets `runner: in-session`, there is no external process — you execute
-the orchestrator procedure yourself (§4).
-
 ## §0 Safety rules (non-negotiable)
 
 - If the `CODE_REVIEW_CHILD` sentinel printed by the command is non-empty, you are inside a
   reviewer/orchestrator process. Refuse and stop.
 - Launch at most ONE orchestrator process per round, via the bundled script only. Never invoke
   the runner ad hoc, and never call the script twice in a round.
-- Reviewers and verifiers are read-only subagents of the orchestrator; never spawn review
-  subagents from the current session in external mode.
+- The orchestrator owns all reviewer and verifier dispatch. If its runner is unavailable,
+  report the blocker and stop.
 - Never use worktree isolation anywhere in this workflow.
 - Never commit, push, stage, or revert anything unless the user explicitly asks.
 
 ## §1 Load configuration
 
-Read effective settings with `python3 -B PLUGIN_ROOT/scripts/review.py config` from the Git
-root. [Configuration](configuration.md) defines the shared JSON format. Use `claude.runner`
-or the default `claude` as the compatible command prefix. For `in-session`, follow §4.
-Flags override concurrency, adversarial max rounds, and spec for this run only.
+Follow [configuration.md](configuration.md) before selecting a target or resuming.
+Use the saved `claude.runner` as the external runner. Flags override concurrency,
+adversarial max rounds, and spec for this run only.
 
 ## §2 Resolve the review target
 
@@ -80,7 +76,7 @@ Resolve them in this order; several documents at once are normal:
 With no spec source, omit the `spec` angle from the round and say so in the report (§7) —
 never fabricate a spec, and never block the review on one.
 
-## §3 Launch the orchestrator (external mode)
+## §3 Launch the orchestrator
 
 1. Set `RUN_DIR=.code-review/runs/<yyyymmdd-HHMMSS>/round-<N>/` (repo root, NOT under
    `.claude/` — Claude Code's sensitive-file protection auto-denies headless writes there).
@@ -149,13 +145,9 @@ never fabricate a spec, and never block the review on one.
    stats); treat it as prose and survive its absence or translation. Fallback: if
    findings.json is missing or unparseable, use the **last fenced ```json block** in
    orchestrator.out. A failure is: a non-zero exit code, or neither a parseable
-   findings.json nor a json block. On failure: the script has already auto-resumed
-   the orchestrator session once internally, so do NOT blindly relaunch. Read
-   `orchestrator.err`, confirm the process actually exited (`RUN_DIR/out/orchestrator.exit`
-   exists), then resume — never restart — the round per "Resuming a failed round" below, at
-   most once; if that also fails (e.g. quota exhausted until a stated reset time), report the
-   failure and the exact resume command to the user and stop. Never have two orchestrators
-   alive at once, and never relaunch from scratch for a round whose tokens are already spent.
+   findings.json nor a json block. On failure, read `orchestrator.err` after the
+   completion notification, report the failure and the resume command, and stop.
+   Automatic retries belong to the launcher. Resume the checkpoint when the user asks.
 
 While waiting, do nothing else — no speculative fixes, no other tasks.
 
@@ -189,69 +181,6 @@ to resume a review that died earlier (e.g. after a usage-limit reset), locate th
 `.code-review/runs/*/round-*` without a usable result (no non-empty `out/findings.json` and
 no ` ```json ` block in `out/orchestrator.out`), confirm it with the user, and resume it
 instead of starting a new round.
-
-## §4 In-session mode (`runner: in-session`)
-
-No external process: you act as the orchestrator yourself. Execute the procedure in
-`PLUGIN_ROOT/references/orchestrator.md` directly in this session, with these
-substitutions:
-
-- The "launch parameters" that document references are the values you resolved in §1–§2;
-  create `RUN_DIR` yourself as in §3 step 1.
-- No launcher pre-builds the packet in-session: write `RUN_DIR/packet.md` yourself first —
-  target description (stating declared-intended behavior, as §3 requires of `--target`),
-  `git diff <args> --stat` list, known issues (round 2+), the spec documents from §2.5 (a
-  `## Spec` section with one `### Spec document: <path>` block per document, before the
-  diff, opening with the same intended-behavior note the launcher writes — required
-  behavior is intended, only its uncovered consequences are findings; omit the section when
-  there is no spec), and the full
-  `git diff <args>` output, using the same `--diff-args` mapping as §3. Then gather what
-  the launcher puts in the addendum (see "Packet addendum" in orchestrator.md: convention
-  documents, untracked files) and **append it
-  to `packet.md` instead** — in-session there is no addendum file: the `code-review:reviewer`
-  agent is a static plugin definition with no packet in its system prompt, so reviewers read
-  the packet from disk and everything must be inside that one file. Likewise
-  concretize `RUN_DIR/prompts/<angle>.md` from the templates yourself (orchestrator.md
-  Step 2 assumes the launcher did it; in-session there is none) — substituting every `{{…}}`
-  placeholder, including `{{RECEIPT_CONTRACT}}` (verbatim contents of
-  `PLUGIN_ROOT/references/receipt-contract.md` — the output contract `findings.sh` parses, so
-  a prompt that keeps the literal placeholder produces checkpoints nothing can read) and
-  `{{PACKET_NOTE}}`: state that the packet must be read from that path FIRST and that it
-  already includes the project conventions and untracked files (no addendum), then measure
-  it and say whether it fits in one `Read` (the tool rejects anything over 25,000 tokens) or
-  must be read in sequential chunks, and at what chunk size. `sweep.md`'s
-  `{{VERIFIED_FINDINGS}}` is the one placeholder filled later.
-- Also write `RUN_DIR/launch-params.json` (`{"version": 1, "requested_angles": [...],
-  "diff_args": "<the resolved diff args, e.g. HEAD or main...HEAD>"}`) and, for a working-tree
-  target, `RUN_DIR/untracked-sums.txt` (one `<path>\t<cksum>` line per untracked file you
-  appended to the packet, from `cksum < file | cut -d' ' -f1`). `findings.sh build` re-runs the
-  diff named by `diff_args` and compares those checksums to mark `stale: true` on findings
-  whose file changed during the round; without these files it silently marks nothing.
-- Build the tasks via `python3 -B PLUGIN_ROOT/scripts/review.py claude-plan --run-dir RUN_DIR
-  --diff-args="<diff arguments>" --angles "<comma-separated angles>"`. Write the returned
-  array as `tasks` in a v2 `review-plan.json` with `status: "ready"`, `requested_angles`,
-  and `late_waves` (`[{"wave":2,"angles":["sweep"]}]` for adversarial, otherwise `[]`).
-  The helper writes any slice prompts. Use `findings.sh pending` before dispatch and
-  `prepare --strict` / `build --strict` for verification bookkeeping.
-- Dispatch angle reviewers and verifiers via the `Agent` tool with
-  `subagent_type: "code-review:reviewer"` — never the `fork` type: a fork inherits this
-  whole conversation and the session model, discarding the tier choice, the agent's
-  read-only definition, and the verifiers' independence. Give each dispatch the packet path
-  (verifiers too) — the in-session agent has nothing in its system prompt.
-- Interactive sessions on Claude Code v2.1.232+ run in fork mode by default: every subagent
-  runs in the background and the `Agent` tool has no `run_in_background` parameter, so
-  orchestrator.md's "dispatch synchronously" rule (written for the headless runner) does not
-  apply. Issue a whole wave in one message, end your turn, and continue when the harness
-  delivers the completion notifications — never poll or busy-wait. Checkpoint each result
-  as orchestrator.md requires when the notifications arrive (there is no transcript
-  harvester in-session, so those Writes are the only checkpoints).
-- Read each task's `complexity` and apply the Claude model profile for that level. Query the
-  harness's current model and effort capabilities when exposed. Otherwise inherit the
-  current model and effort. Pass an explicit override only when the Agent tool accepts
-  it. Use medium complexity for verification and high for the gap sweep.
-- Dispatch up to 13 first-wave tasks, plus the gap sweep. Queue all verifier batches
-  within the configured concurrency. Preserve checkpoints on interruption.
-- Then continue at §5 with the surviving (CONFIRMED / PLAUSIBLE) findings.
 
 ## §5 Verify findings and act
 

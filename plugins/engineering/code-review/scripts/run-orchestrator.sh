@@ -85,17 +85,23 @@ else
   [ -n "$RUNNER" ] && [ -n "$RUN_DIR" ] && [ -n "$TARGET" ] && [ -n "$DIFF_ARGS" ] && [ -n "$ANGLES" ] || usage
 fi
 
+PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)" || exit 1
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "not inside a git repository" >&2; exit 1; }
+CONFIG="$(python3 -B "$PLUGIN_ROOT/scripts/review.py" --repo "$REPO_ROOT" config)" \
+  || { printf '%s\n' "$CONFIG" >&2; exit 1; }
+if [ "$RESUME" = "1" ] && [ -s "$RUN_DIR/claude-runner.txt" ]; then
+  RUNNER="$(cat "$RUN_DIR/claude-runner.txt")"
+fi
+if [[ "$RUNNER" =~ ^[[:space:]]*(in-session)?[[:space:]]*$ ]]; then
+  echo "An external Claude runner is required. For an old checkpoint, supply its original runner." >&2
+  exit 2
+fi
+
 # Pre-create every dir the orchestrator writes into: session-side mkdir/Write under a
 # protected path (e.g. anything in .claude/) would be auto-denied in headless mode.
 mkdir -p "$RUN_DIR/out" "$RUN_DIR/prompts" || exit 1
 RUN_DIR="$(cd "$RUN_DIR" && pwd -P)" || exit 1
 OUTDIR="$RUN_DIR/out"
-if [ "$RESUME" = "1" ] && [ -s "$RUN_DIR/claude-runner.txt" ]; then
-  RUNNER="$(cat "$RUN_DIR/claude-runner.txt")"
-fi
-[ -n "$RUNNER" ] || { echo "resume: supply the original Claude runner via --runner" >&2; exit 2; }
-PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)" || exit 1
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "not inside a git repository" >&2; exit 1; }
 PROMPT_FILE="$RUN_DIR/orchestrator-prompt.md"
 SESSION_FILE="$RUN_DIR/session-id"
 PACKET="$RUN_DIR/packet.md"

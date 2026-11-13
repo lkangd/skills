@@ -14,6 +14,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = Path(".code-review/runs")
 CONFIG = Path(".code-review/config.local.json")
+CONFIG_TEMPLATE = {
+    "concurrency": 4,
+    "max_rounds": 3,
+    "backlog_dir": "docs/code-review-backlog",
+    "claude": {"runner": "claude"},
+    "codex": {},
+    "pi": {},
+}
 NORMAL = ["correctness", "removed-behavior", "callers", "cleanup", "conventions"]
 DEEP = ["design", "pitfalls", "wrapper"]
 LEVELS = ("low", "medium", "high")
@@ -44,16 +52,35 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def settings(repo):
+def config_path(repo):
     path = repo / CONFIG
     if path.is_symlink() or path.parent.is_symlink():
         raise ValueError(f"{CONFIG} must be inside the current repository")
-    value = read_json(path) if path.exists() else {}
-    if not isinstance(value, dict):
+    return path
+
+
+def settings(repo):
+    path = config_path(repo)
+    if not path.is_file():
+        raise ValueError(f"Missing {CONFIG}. Run code-review setup and confirm the complete configuration.")
+    return validate_settings(repo, read_json(path))
+
+
+def save_settings(repo, value):
+    path = config_path(repo)
+    result = validate_settings(repo, value)
+    path.parent.mkdir(exist_ok=True)
+    write_json(path, result)
+    return result
+
+
+def validate_settings(repo, result):
+    if not isinstance(result, dict):
         raise ValueError(f"{CONFIG} must contain a JSON object")
-    result = {"concurrency": 4, "max_rounds": 3, "backlog_dir": "docs/code-review-backlog",
-              "claude": {}, "codex": {}, "pi": {}}
-    result.update(value)
+    missing = CONFIG_TEMPLATE.keys() - result.keys()
+    if missing:
+        raise ValueError(f"Incomplete {CONFIG}: missing {', '.join(sorted(missing))}. "
+                         "Run code-review setup to confirm the complete configuration.")
     for key, minimum in (("concurrency", 0), ("max_rounds", 1)):
         if type(result[key]) is not int or result[key] < minimum:
             raise ValueError(f"{key} must be an integer of at least {minimum}")
@@ -76,10 +103,14 @@ def settings(repo):
             if any(not isinstance(item, str) or not item.strip()
                    or any(char in item for char in "\0\r\n") for item in profile.values()):
                 raise ValueError(f"{backend} model and effort overrides must be nonempty strings")
-    runner = result["claude"].get("runner", "claude")
-    if not isinstance(runner, str) or not runner.strip() or "\n" in runner or "\r" in runner:
-        raise ValueError("claude.runner must be a Claude-compatible command prefix or in-session")
+    validate_claude_runner(result["claude"].get("runner"))
     return result
+
+
+def validate_claude_runner(runner):
+    if (not isinstance(runner, str) or not runner.strip()
+            or any(char in runner for char in "\0\n\r") or runner.strip() == "in-session"):
+        raise ValueError("claude.runner must name an external Claude-compatible runner")
 
 
 def git(repo, *args, data=None):
