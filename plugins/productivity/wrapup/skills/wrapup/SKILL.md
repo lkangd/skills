@@ -1,6 +1,6 @@
 ---
 name: wrapup
-description: This skill should be used when the user explicitly invokes "wrapup" to finish a session with current-worktree checks, full test gates, scoped commits, and a call to the handoff skill for the next agent.
+description: Finish a session with current-worktree checks, full test gates, scoped commits, and a handoff for the next agent.
 argument-hint: "What will the next session be used for?"
 disable-model-invocation: true
 ---
@@ -9,7 +9,15 @@ disable-model-invocation: true
 
 Run the following steps in order. Treat any supplied arguments as the next session's focus, not as authorization to expand the scope of fixes or commits.
 
-Before starting, verify that `handoff:handoff` is available through the Skill tool. If unavailable, stop and report that the `handoff` dependency must be installed and enabled; do not perform fixes or commits and do not substitute an inline handoff implementation.
+## Check the handoff dependency
+
+Before inspecting the worktree, locate the handoff skill in the current session:
+
+- In Claude Code, verify that the Skill tool lists `handoff:handoff`.
+- In Codex, find `handoff:handoff` in the available skills and verify that its listed `SKILL.md` path is readable. Keep that path for step 4.
+- In Pi, find `handoff` in the available skills and verify that its listed `SKILL.md` is readable and belongs to the same installed package as this skill. From the directory containing this `SKILL.md`, the package's handoff skill is at `../../../handoff/skills/handoff/SKILL.md`. Compare resolved paths if needed and keep the listed path for step 4.
+
+If the required skill is unavailable, stop before the workflow starts and report how to make it available. In Claude Code or Codex, install and enable `handoff@lkangd-skills`. In Pi, enable the package's `handoff` skill and resolve any same-name collision. Start a fresh session if needed for the host to discover it.
 
 ## 1. Inspect the current worktree
 
@@ -39,7 +47,9 @@ Do not create empty commits, amend existing commits, bypass hooks, or push autom
 
 ## 4. Invoke the handoff skill
 
-Call the Skill tool with `skill: "handoff:handoff"`. Pass any supplied arguments unchanged in `args` as the next session's focus; omit `args` when none were supplied.
+In Claude Code, call the Skill tool with `skill: "handoff:handoff"`. Pass any supplied arguments unchanged in `args` as the next session's focus. Omit `args` when none were supplied.
+
+In Codex or Pi, read the `SKILL.md` verified before step 1 and apply it here. Use the original wrapup arguments unchanged as the handoff's next-session focus.
 
 Follow the loaded skill in the current conversation so it can include the decisions, commit outcomes, validation results, excluded work, and blockers from steps 1–3. Delegate all document content and save-location rules to that skill; do not duplicate them here or write a second document.
 

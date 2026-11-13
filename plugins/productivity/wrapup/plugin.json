@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "wrapup",
+  "version": "1.0.0",
+  "description": "Wrap up a session with current-worktree checks, full test gates, scoped commits, and a call to the handoff skill for the next agent.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  },
+  "repository": "https://github.com/lkangd/agent-skills"
+}

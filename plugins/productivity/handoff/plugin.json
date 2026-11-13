@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "handoff",
+  "version": "1.0.0",
+  "description": "Summarize the current conversation into a handoff document for the next agent, following save-location preferences without running tests or creating commits.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  },
+  "repository": "https://github.com/lkangd/agent-skills"
+}

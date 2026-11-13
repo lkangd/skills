@@ -7,7 +7,7 @@ disable-model-invocation: false
 
 # Handoff
 
-Write a handoff document summarizing the current conversation so a fresh agent can continue the work. Allow direct user invocation and invocation by `wrapup:wrapup` through the Skill tool.
+Write a handoff document summarizing the current conversation so a fresh agent can continue the work. Use the same workflow when invoked directly or loaded by the wrapup skill.
 
 If the user passed arguments, treat them as a description of what the next session will focus on and tailor the doc accordingly.
 

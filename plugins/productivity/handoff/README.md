@@ -1,19 +1,27 @@
 # Handoff Plugin
 
-Summarize the current conversation into a handoff document so a fresh agent can continue. This skill only writes the document; it does not inspect Git state, run tests, fix code, or create commits.
+Summarize the current conversation into a handoff document so a fresh agent can continue. The skill writes the document using the Git and validation results already in the conversation.
 
 ## Usage
 
-Install `handoff@lkangd-skills` from the marketplace, then invoke:
+Install from a local checkout. In Claude Code, run `/plugin install handoff --marketplace /absolute/path/to/agent-skills`. In Codex, run:
 
-```text
-/handoff:handoff
-/handoff:handoff Continue the API migration next session
+```sh
+codex plugin marketplace add /absolute/path/to/agent-skills
+codex plugin add handoff@lkangd-skills
 ```
 
-Arguments describe the next session's focus. Without arguments, summarize the remaining work. Arguments do not authorize unrelated actions.
+In Pi, run `pi install /absolute/path/to/agent-skills` to install the repository package, which includes both `handoff` and `wrapup`.
 
-The plugin and skill are both named `handoff`. `disable-model-invocation: false` permits both direct user invocation and agent invocation. The [wrapup plugin](../wrapup/README.md) declares a dependency on handoff and calls `handoff:handoff` through the Skill tool in its fourth step, passing the original focus arguments unchanged.
+Start a fresh session in the target workspace and use the entry point for your host.
+
+| Host | Invocation with an example focus |
+| --- | --- |
+| Claude Code | `/handoff:handoff Continue the API migration next session` |
+| Codex | `$handoff:handoff Continue the API migration next session` |
+| Pi | `/skill:handoff Continue the API migration next session` |
+
+Arguments describe the next session's focus. Omit them to summarize the remaining work. The agent can also select handoff when the user asks for a handoff or when [wrapup](../wrapup/README.md) reaches its final step.
 
 ## Document contract
 
@@ -42,6 +50,7 @@ Choose a unique filename and inspect any existing target before writing. Tempora
 plugins/productivity/handoff/
 ├── .claude-plugin/
 │   └── plugin.json
+├── plugin.json
 ├── README.md
 └── skills/
     └── handoff/
@@ -66,14 +75,14 @@ The hash identifies the original upstream baseline, not the current local skill 
 ## Differences from the original upstream skill
 
 - Packaged the skill as an independent productivity plugin with marketplace registration.
-- Allowed agent invocation so wrapup can reuse it through the Skill tool.
+- Allowed agent invocation so wrapup can reuse the same workflow in the current session.
 - Added explicit save-location preferences, unique filenames, and a workspace fallback when requested; kept OS temporary storage as the default.
 - Made the document-only boundary explicit, with known-state summaries and no Git commands, tests, or commits.
 - Retained suggested skills, artifact references, redaction, and next-session argument semantics.
 
 ## Maintenance
 
-- Edit `skills/handoff/SKILL.md` for document generation rules and keep its manifest, marketplace description, and this README aligned.
+- Edit `skills/handoff/SKILL.md` for document generation rules and keep its manifests, marketplace description, and this README aligned.
 - Keep wrapup's fourth step as a call to this skill rather than a second implementation.
 - Compare upstream changes against the original baseline before merging. Do not replace the baseline hash with a local-file hash or claim an upstream sync without verification.
 - Validate both plugin structure and agent-callable skill metadata after changes.

@@ -4,7 +4,11 @@
   "private": true,
   "pi": {
     "extensions": ["./plugins/engineering/code-review/pi/extension.ts"],
-    "skills": ["./plugins/engineering/plugin-portability/skills/plugin-portability"],
+    "skills": [
+      "./plugins/engineering/plugin-portability/skills/plugin-portability",
+      "./plugins/productivity/handoff/skills/handoff",
+      "./plugins/productivity/wrapup/skills/wrapup"
+    ],
     "prompts": [],
     "themes": []
   }
