@@ -1,0 +1,19 @@
+{
+  "name": "agent-skills-project",
+  "interface": {
+    "displayName": "Agent Skills Project"
+  },
+  "plugins": [
+    {
+      "name": "plugin-portability",
+      "source": {
+        "source": "local",
+        "path": "./plugins/engineering/plugin-portability"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      }
+    }
+  ]
+}
