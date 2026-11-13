@@ -1,0 +1,3 @@
+interface:
+  display_name: "Plugin Portability"
+  short_description: "Build plugins for Claude Code, Codex, and Pi"

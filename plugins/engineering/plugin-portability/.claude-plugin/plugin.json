@@ -1,0 +1,9 @@
+{
+  "name": "plugin-portability",
+  "version": "1.0.0",
+  "description": "Migrate or create plugins for Claude Code, Codex, and Pi in the agent-skills repository.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  }
+}

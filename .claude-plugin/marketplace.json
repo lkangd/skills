@@ -149,6 +149,17 @@
       ]
     },
     {
+      "name": "plugin-portability",
+      "source": "./plugins/engineering/plugin-portability",
+      "description": "Migrate or create plugins for Claude Code, Codex, and Pi in the agent-skills repository.",
+      "category": "engineering",
+      "tags": [
+        "plugins",
+        "portability",
+        "migration"
+      ]
+    },
+    {
       "name": "my-workflows",
       "source": "./plugins/engineering/my-workflows",
       "description": "Personal engineering workflow commands for creating development worktrees and VS Code workspace files from company dev-f/dev-bg branches.",

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "plugin-portability",
+  "version": "1.0.0",
+  "description": "Migrate or create plugins for Claude Code, Codex, and Pi in the agent-skills repository.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  },
+  "repository": "https://github.com/lkangd/agent-skills"
+}

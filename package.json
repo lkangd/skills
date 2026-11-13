@@ -4,7 +4,7 @@
   "private": true,
   "pi": {
     "extensions": ["./plugins/engineering/code-review/pi/extension.ts"],
-    "skills": [],
+    "skills": ["./plugins/engineering/plugin-portability/skills/plugin-portability"],
     "prompts": [],
     "themes": []
   }
