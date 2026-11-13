@@ -1,0 +1,11 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "package-release",
+  "version": "1.0.0",
+  "description": "Automate package versioning, changelog generation, release commits, and local tags using conventional commits.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  },
+  "repository": "https://github.com/lkangd/agent-skills"
+}

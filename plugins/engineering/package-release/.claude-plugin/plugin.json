@@ -1,6 +1,7 @@
 {
   "name": "package-release",
-  "description": "Automate package versioning, changelog generation, and release commits using conventional commit standards",
+  "version": "1.0.0",
+  "description": "Automate package versioning, changelog generation, release commits, and local tags using conventional commits.",
   "author": {
     "name": "Curtis Liong",
     "email": "lkangd@gmail.com"
