@@ -64,8 +64,7 @@ Read `PLUGIN_ROOT/references/review-core.md` and execute it in **loop mode**. Yo
 not orchestrate the reviews — each round launches one orchestrator session that does the diff
 collection, reviewer dispatch, and finding verification, and hands you a consolidated report:
 
-1. Safety rules (§0), load config (§1) — run setup first if `.claude/code-review.local.md` is
-   missing.
+1. Safety rules (§0), load the shared configuration (§1), or use defaults.
 2. Resolve the review target (§2) and the spec sources (§2.5) — explicit `--spec=` paths,
    else specs already in this session's context, else ask (default: no spec).
 3. **Round 1**: launch ONE orchestrator with angles

@@ -42,18 +42,10 @@ the orchestrator procedure yourself (§4).
 
 ## §1 Load configuration
 
-Read `.claude/code-review.local.md` in the project root. Its YAML frontmatter:
-
-| field | default | meaning |
-|---|---|---|
-| `runner` | `claude` | Command prefix that launches the orchestrator session, e.g. `ccsp -g gpt claude`. Special value `in-session`: no external process (§4). |
-| `concurrency` | `0` | Max reviewer subagents at once inside the orchestrator. `0` = no limit. |
-| `max_rounds` | `3` | Adversarial loop cap. |
-| `backlog_dir` | `docs/code-review-backlog` | Where deferred findings are filed. |
-
-If the file does not exist, run the setup flow from `commands/setup.md` first, then continue.
-Flags override config for this run only: `-c=N` → concurrency, `--max-rounds=N` (adversarial),
-`--spec=<path>[,<path>…]` → explicit spec documents (§2.5).
+Read effective settings with `python3 -B PLUGIN_ROOT/scripts/review.py config` from the Git
+root. [Configuration](configuration.md) defines the shared JSON format. Use `claude.runner`
+or the default `claude` as the compatible command prefix. For `in-session`, follow §4.
+Flags override concurrency, adversarial max rounds, and spec for this run only.
 
 ## §2 Resolve the review target
 
@@ -105,7 +97,7 @@ never fabricate a spec, and never block the review on one.
    before launching rather than sending a doomed background task):
    ```
    bash "PLUGIN_ROOT/scripts/run-orchestrator.sh" \
-     --runner "<runner from config>" \
+     --runner "<Claude-compatible runner>" \
      --run-dir "RUN_DIR" \
      --target "<precise description of the review target>" \
      --diff-args "<arguments for git diff that produce the target's diff>" \
@@ -138,7 +130,7 @@ never fabricate a spec, and never block the review on one.
    The script builds the orchestrator prompt AND the diff packet itself (fails fast on a bad
    diff spec) — never read or fill `references/orchestrator.md` in this session. It also
    enforces the `CODE_REVIEW_CHILD` sentinel and writes the read-only
-   `reviewer-deep`/`reviewer`/`verifier` agent definitions under `RUN_DIR/agents/`, each with
+   `reviewer-low`/`reviewer-medium`/`reviewer-high`/`verifier` agent definitions under `RUN_DIR/agents/`, each with
    the packet embedded in its system prompt so sibling reviewers share one cached prefix
    instead of re-reading the packet from disk.
 4. Read the result. The authoritative payload is **`RUN_DIR/out/findings.json`**: an array
@@ -182,9 +174,12 @@ task, same as a launch — with:
 
 ```
 bash "PLUGIN_ROOT/scripts/run-orchestrator.sh" --resume \
-  --runner "<runner from config>" \
+  [--runner "<original runner for an older run>"] \
   --run-dir "<the failed RUN_DIR>"
 ```
+
+Newer rounds record `claude-runner.txt` and `claude-models.json`. If an older round has no
+recorded runner, ask which compatible command originally ran it.
 
 The script first resumes the original orchestrator session (context intact, it continues at
 the first incomplete step); if that yields no report it launches a fresh salvage session
@@ -232,20 +227,12 @@ substitutions:
   appended to the packet, from `cksum < file | cut -d' ' -f1`). `findings.sh build` re-runs the
   diff named by `diff_args` and compares those checksums to mark `stale: true` on findings
   whose file changed during the round; without these files it silently marks nothing.
-- Create `RUN_DIR/review-plan.json` alongside the prompts with top-level `version: 2`,
-  immutable `requested_angles` containing the unsliced angle list,
-  `late_waves` (`[{"wave":2,"angles":["sweep"]}]` when the round includes `design`, else `[]`),
-  and `tasks`. Each task is `{id, angle, wave}` with `wave: 1` for the review plan proper; its
-  prompt is always `RUN_DIR/prompts/<id>.md` and is never stored. A normal angle uses its angle
-  name as the task ID. Apply the launcher's large-diff rule yourself: when the uncapped
-  `git diff <args>` line count plus the untracked files' line count exceeds 1,500, the plan is
-  `draft` and you finish it per orchestrator.md Step 1 (slice tasks `<angle>-<N>` starting at 1
-  replace that angle's base task, with a `prompts/<id>.md` per slice); otherwise write it with
-  `status: "ready"`. Write the finished
-  plan atomically. Before every initial/resume dispatch, run
-  `scripts/findings.sh pending --run-dir RUN_DIR` and dispatch exactly those task IDs. Then run
-  `prepare` before verification and `build` before reporting instead of doing that bookkeeping
-  by hand.
+- Build the tasks via `python3 -B PLUGIN_ROOT/scripts/review.py claude-plan --run-dir RUN_DIR
+  --diff-args="<diff arguments>" --angles "<comma-separated angles>"`. Write the returned
+  array as `tasks` in a v2 `review-plan.json` with `status: "ready"`, `requested_angles`,
+  and `late_waves` (`[{"wave":2,"angles":["sweep"]}]` for adversarial, otherwise `[]`).
+  The helper writes any slice prompts. Use `findings.sh pending` before dispatch and
+  `prepare --strict` / `build --strict` for verification bookkeeping.
 - Dispatch angle reviewers and verifiers via the `Agent` tool with
   `subagent_type: "code-review:reviewer"` — never the `fork` type: a fork inherits this
   whole conversation and the session model, discarding the tier choice, the agent's
@@ -258,12 +245,12 @@ substitutions:
   delivers the completion notifications — never poll or busy-wait. Checkpoint each result
   as orchestrator.md requires when the notifications arrive (there is no transcript
   harvester in-session, so those Writes are the only checkpoints).
-- Choose the model per dispatch with the `model` parameter using tier aliases
-  (opus = complex angles, sonnet = moderate angles and verifiers), matching the tier
-  guidance in orchestrator.md. Aliases resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping
-  automatically.
-- The orchestrator's budget caps (≤ 13 reviewers including large-diff splits and the
-  optional `spec` angle, plus the Step 3.5 sweep, ≤ 10 verifiers, total 24) apply unchanged.
+- Read each task's `complexity` and apply the Claude model profile for that level. Query the
+  harness's current model and effort capabilities when exposed. Otherwise inherit the
+  current model and effort. Pass an explicit override only when the Agent tool accepts
+  it. Use medium complexity for verification and high for the gap sweep.
+- Dispatch up to 13 first-wave tasks, plus the gap sweep. Queue all verifier batches
+  within the configured concurrency. Preserve checkpoints on interruption.
 - Then continue at §5 with the surviving (CONFIRMED / PLAUSIBLE) findings.
 
 ## §5 Verify findings and act

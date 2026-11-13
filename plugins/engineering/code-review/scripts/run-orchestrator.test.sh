@@ -127,7 +127,7 @@ assert_json "$SMALL_RUN/out/orchestrator.exit" '. == 0'
 # Reviewer/verifier definitions are agent files that embed the packet verbatim in their system
 # prompt (one shared, cacheable prefix per tier) and reach the session via --add-dir; the angle
 # prompts must therefore steer reviewers to the addendum instead of re-reading packet.md.
-for agent in reviewer-deep:opus:20 reviewer:sonnet:20 verifier:sonnet:15; do
+for agent in reviewer-high:inherit:20 reviewer-medium:inherit:20 reviewer-low:inherit:20 verifier:inherit:15; do
   name="${agent%%:*}"
   rest="${agent#*:}"
   model="${rest%%:*}"
@@ -141,7 +141,7 @@ for agent in reviewer-deep:opus:20 reviewer:sonnet:20 verifier:sonnet:15; do
   grep -q "^maxTurns: $turns\$" "$file" || fail "agent file lacks maxTurns $turns: $file"
   grep -Fq "HARD cap of $turns turns" "$file" || fail "agent prompt does not state its turn budget: $file"
   ! grep -Fq 'TURN_BUDGET' "$file" || fail "agent prompt kept the raw TURN_BUDGET placeholder: $file"
-  grep -q '^tools: Read, Grep, Glob, Bash$' "$file" || fail "agent file lost its tool allowlist: $file"
+  grep -q '^tools: Read, Grep, Glob$' "$file" || fail "agent file lost its tool allowlist: $file"
   grep -Fq 'small change' "$file" || fail "agent file does not embed the packet diff: $file"
   grep -Fq '# Review Packet' "$file" || fail "agent file lacks the packet heading: $file"
 done
@@ -249,7 +249,7 @@ grep -q 'unknown angle (no template): missing-angle' "$TMP_ROOT/unknown.err" \
   || fail "launcher persisted a plan before rejecting the unknown angle"
 
 # A working-tree target's untracked files land in the addendum at launch; a small one no longer
-# forces a draft plan the orchestrator has to finalize by hand.
+# requires the planner to consider untracked content.
 WORKTREE_RUN="$TMP_ROOT/worktree-run"
 printf '%s\n' 'untracked content' > "$REPO/untracked.txt"
 printf '%s\n' 'tracked edit' >> "$REPO/example.txt"
@@ -294,7 +294,7 @@ rm "$REPO/pkg/new.js"
 git -C "$REPO" rm -q pkg/AGENTS.md
 git -C "$REPO" commit -qm "drop pkg rules"
 
-# A large untracked file still tips a working-tree target into a draft plan.
+# A large untracked file stays one coherent scope when its content can be inspected.
 BIG_UNTRACKED_RUN="$TMP_ROOT/big-untracked-run"
 : > "$REPO/big-untracked.txt"
 line=1
@@ -303,7 +303,7 @@ while [ "$line" -le 1600 ]; do
   line=$((line + 1))
 done
 run_launcher "$BIG_UNTRACKED_RUN" "HEAD" "correctness"
-assert_json "$BIG_UNTRACKED_RUN/review-plan.json" '.status == "draft"'
+assert_json "$BIG_UNTRACKED_RUN/review-plan.json" '.status == "ready"'
 grep -Fq '### big-untracked.txt (1600 lines, first 400 shown)' "$BIG_UNTRACKED_RUN/packet-addendum.md" \
   || fail "addendum does not cap and label a long untracked file"
 rm "$REPO/big-untracked.txt"
@@ -347,26 +347,35 @@ grep -Fq '### sub/AGENTS.md' "$WITH_CONVENTIONS_RUN/packet-addendum.md" \
 git -C "$REPO" rm -q CLAUDE.md sub/AGENTS.md sub/inner.txt
 git -C "$REPO" commit -qm "drop conventions"
 
-# Create a committed diff whose unified form exceeds the split threshold.
-: > "$REPO/large.txt"
-line=1
-while [ "$line" -le 1600 ]; do
-  printf 'line %s\n' "$line" >> "$REPO/large.txt"
-  line=$((line + 1))
-done
-git -C "$REPO" add large.txt
+# Large changes use balanced file groups, with no tiny trailing reviewer.
+mkdir "$REPO/first" "$REPO/second"
+awk 'BEGIN { for (n=1;n<=800;n++) print "first",n }' > "$REPO/first/large.txt"
+awk 'BEGIN { for (n=1;n<=800;n++) print "second",n }' > "$REPO/second/large.txt"
+git -C "$REPO" add first second
 git -C "$REPO" commit -qm large
 LARGE_RUN="$TMP_ROOT/large-run"
 run_launcher "$LARGE_RUN"
 assert_json "$LARGE_RUN/review-plan.json" '
-  .version == 2 and .status == "draft"
+  .version == 2 and .status == "ready"
   and .requested_angles == ["correctness", "callers"]
-  and [.tasks[].id] == ["correctness", "callers"]'
-if bash "$SCRIPT_DIR/findings.sh" pending --run-dir "$LARGE_RUN" \
-  >/dev/null 2> "$LARGE_RUN/pending.err"; then
-  fail "pending accepted the launcher draft plan before slicing"
-fi
-grep -q 'review plan is not ready' "$LARGE_RUN/pending.err" \
-  || fail "draft plan rejection did not explain that slicing must finish"
+  and [.tasks[].id] == ["correctness-1", "correctness-2", "callers-1", "callers-2"]'
+for angle in correctness callers; do
+  grep -Fq '+first 800' "$LARGE_RUN/prompts/$angle-1.md" || fail "first slice missing"
+  grep -Fq '+second 800' "$LARGE_RUN/prompts/$angle-2.md" || fail "second slice missing"
+done
 
-printf 'ok - launcher persists ready and draft review plans\n'
+PYTHONPATH="$SCRIPT_DIR" python3 -B - <<'PYTEST'
+from review_workspace import Change, balance, patch_weight
+
+def change(path, count):
+    patch = (f"diff --git a/{path} b/{path}\n--- /dev/null\n+++ b/{path}\n"
+             f"@@ -0,0 +1,{count} @@\n" + "+line\n" * count)
+    return Change(path, patch, patch_weight(patch))
+
+assert len(balance([change("a/x", 1500), change("b/y", 100)], 3)) == 1
+slices = balance([change("a/x", 3600)], 4)
+assert len(slices) > 1
+assert sum(part.weight for group in slices for part in group) == 3600
+PYTEST
+
+printf 'ok - launcher persists balanced ready review plans\n'

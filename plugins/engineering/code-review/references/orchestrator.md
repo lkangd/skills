@@ -22,14 +22,10 @@ known-issues list to suppress (may be "none").
 
 - Never invoke any skill or slash command (including any `/code-review` variant).
 - Never create, edit, or delete files outside `RUN_DIR`. Never stage, commit, or revert.
-- Dispatch subagents ONLY of the provided custom types `reviewer-deep`, `reviewer`, and
-  `verifier` — never `general-purpose`, and never the `fork` type (a fork inherits your
-  context, tools, and model, discarding the tier choice, the read-only tool allowlist, and
-  the packet already sitting in the custom types' system prompt). Budget: at most 13 angle
-  reviewers (large-diff splits and the optional `spec` angle included) plus the one Step 3.5
-  sweep, at most 10 verifiers, hard total 24. The sweep is deliberately outside the
-  reviewer budget — an adversarial round fills all 12 reviewer slots with its angle list, and
-  a sweep that only runs on leftover budget never runs at all.
+- Dispatch subagents using the provided `reviewer-low`, `reviewer-medium`,
+  `reviewer-high` and `verifier` types — never `general-purpose`, and never the `fork` type (a fork inherits your
+  context, tools, and model. Dispatch up to 13 first-wave reviewers plus the gap sweep.
+  Queue all verification batches within the configured concurrency.
 - Reviewer subagents are read-only and must never delegate further; the agent definitions
   enforce this — do not work around it.
 - **Checkpoint discipline**: your session can be killed at any moment (API error, quota
@@ -46,7 +42,7 @@ known-issues list to suppress (may be "none").
   turns × context size. Batch ALL independent tool calls into a single message (all
   checkpoint Writes of a returning batch together, all dispatches of a wave together, the
   packet sanity-check as one compound Bash command). Never spend a turn on narration alone —
-  fold required one-line statements (tier choices, split plan) into the message that
+  fold required one-line statements (complexity choices, split plan) into the message that
   dispatches. Never re-read a file whose content you already have. A well-run round needs
   roughly 10–20 of your own turns, not 100: `pending` + dispatch wave(s), checkpoint check,
   `prepare`, verifier wave, checkpoint check, `build`, report.
@@ -75,7 +71,7 @@ an older run has no plan, the helper reconstructs one from its persisted launch 
 prompts; legacy sliced runs fail closed because their original slice scope cannot be recovered
 safely. A missing, malformed, or non-completed receipt remains pending. If a successful reviewer left
 a malformed checkpoint, delete that invalid checkpoint and treat it as a failed dispatch:
-re-dispatch once, then use the inline fallback if the replacement is still malformed. Dispatch
+re-dispatch once, then leave the round incomplete if the replacement is still malformed. Dispatch
 exactly the returned IDs, each with its `RUN_DIR/prompts/<task-id>.md`. `out/verdicts-<n>.json` are completed verifier
 batches; `out/findings.json`, if present, is the final verified findings array — go straight to
 Step 4 and report from it.
@@ -90,7 +86,7 @@ preserves existing candidate numbering and finished batches and prints exactly w
 `RUN_DIR/packet.md` is complete and frozen: the launcher wrote the target description, the
 `--stat` list, the known-issues list (when present), the spec documents (when any), and the
 full unified diff (also raw in `RUN_DIR/raw_diff.txt`), then embedded the whole file verbatim
-in the system prompt of every `reviewer-deep`, `reviewer`, and `verifier` definition. Siblings
+in the system prompt of every `reviewer-low`, `reviewer-medium`, `reviewer-high`, and `verifier` definition. Siblings
 of one type therefore share a single cacheable prompt prefix instead of each reading 30k+
 tokens from disk. Never read the packet yourself (it is not your job to review it), and never
 append to it — anything added there reaches nobody. `RUN_DIR/diff-stat.txt` is the
@@ -121,22 +117,10 @@ the reviewer's system prompt and that the addendum must be read instead, repo ro
 issues) at zero token cost, `sweep.md` included. Never read the templates or rewrite these base
 files. A missing base prompt is a corrupt launch artifact: stop rather than inventing one.
 
-`RUN_DIR/review-plan.json` initially records immutable `requested_angles`, the `late_waves`
-this round declared (Step 3.5's sweep, when it applies), and one wave-1 task per requested
-angle. The launcher marks it `ready` when the diff plus any untracked-file content fits under
-the large-diff threshold and `draft` when it does not.
-If it is draft, judge the diff (`wc -l RUN_DIR/raw_diff.txt`, per-file sizes in
-`diff-stat.txt`, plus the untracked content listed in the addendum) against the large-diff
-rule below before the first review dispatch: either replace split angles with slice tasks, or
-keep the base tasks when no split is needed, then set `status` to `ready` atomically. Never change `requested_angles` or
-`late_waves`. For every split angle,
-write one complete `prompts/<angle>-<slice#>.md` per slice by copying the base
-prompt and appending the slice file restriction, then atomically replace that angle's base task
-with the slice tasks and set `status` to `ready` in the same final Write. Each task has exactly:
-
-```json
-{"id":"correctness-1","angle":"correctness","wave":1}
-```
+`RUN_DIR/review-plan.json` records immutable `requested_angles`, declared
+`late_waves`, and the balanced tasks for wave 1. New runs start with a ready plan.
+For a legacy draft, group related files, avoid a small tail slice, and persist each
+resulting prompt before saving the ready plan.
 
 A task's prompt file is always `RUN_DIR/prompts/<task-id>.md`; the plan never stores that path.
 Every requested angle must have exactly its base task or one-or-more `<angle>-<slice#>` tasks in
@@ -166,52 +150,26 @@ content. Do not write Markdown fences. (`findings.sh` accepts fenced checkpoints
 but raw JSON is canonical.) Every new checkpoint must be
 `{"status":"completed","findings":[...]}`. A successful task with zero candidates therefore
 writes the explicit non-empty receipt `{"status":"completed","findings":[]}`; that completed
-status, not finding count, is the "this task is done" marker a resume relies on. The inline
-fallback must emit and checkpoint the same receipt. Never replace a valid completed receipt
+status, not finding count, is the "this task is done" marker a resume relies on. Never replace a valid completed receipt
 during resume.
 
-**Large-diff fan-out** — one reviewer's attention dilutes over a big packet. If the diff
-(`raw_diff.txt`) exceeds ~1,500 lines, split the highest-risk angles (`correctness` first, then
-`removed-behavior`, then `callers`) instead of dispatching them once: group the changed files
-into 2–3 coherent slices (by directory or feature, each slice ≤ ~1,200 diff lines). For each
-slice, create `prompts/<angle>-<slice#>.md` by copying the base prompt and appending:
-"Restrict your review to these files: <slice file list>. Treat the rest of the packet as context
-only." Replace that angle's base task with matching `{id, angle, prompt}` slice tasks in the
-same final plan Write. Stay within the reviewer budget — merge slices rather than exceed it.
+**Task slicing and complexity**. A fresh launcher persists a ready plan with balanced file
+groups and a `complexity` of `low`, `medium`, or `high` on each task. Follow that plan and
+dispatch `reviewer-<complexity>` with the saved prompt. Low covers routine checks, medium
+covers ordinary code reasoning and independent verification, and high covers cross-file
+behavior, state transitions, pitfalls and spec reasoning. The launcher resolves models
+and effort from the actual Claude runner and its model capabilities, then records the
+result for resume. The sweep uses high complexity. Report the plan alongside dispatch.
 
-**Model tier selection** — match cost to task complexity (tier aliases opus > sonnet > haiku
-resolve through `ANTHROPIC_DEFAULT_*_MODEL` remapping automatically):
-
-- `reviewer-deep` (opus tier) — use when the angle must reason hard: `correctness`,
-  `removed-behavior`, `pitfalls`, `wrapper`, `design`, `spec`, or `re-review` on a
-  non-trivial change, or any angle when the diff is large or touches concurrency/state
-  machines/security-sensitive code.
-- `reviewer` (sonnet tier) — use for moderate work: `callers`, `conventions`, and `cleanup`
-  (or the legacy single-category angles `reuse`, `simplification`, `efficiency`, `altitude`
-  when a round requests them) on typical changes, or any angle when the diff is small and
-  mechanical. Cleanup angles and `conventions` NEVER get `reviewer-deep`, whatever the diff —
-  a deep-tier cleanup reviewer has been observed burning 1M+ tokens for zero extra findings.
-- Every agent type carries a hard `maxTurns` budget (reviewers 20, verifiers 15 by default).
-  An agent that hits it returns without a receipt; treat that exactly like any other failed
-  dispatch below. Do not try to lift the budget by re-dispatching with extra instructions.
-
-State the tier choices — and the split plan when fanning out — in the same message that
-issues the dispatches, one line total; never spend separate turns announcing them.
+For a legacy draft, group related files into balanced slices when the review would benefit,
+then write the per-slice prompts and atomically finalize the ready plan before dispatch.
 
 Respect the concurrency limit: if it is N > 0, run at most N subagents at a time and wait for
 a batch before starting the next; if 0, dispatch everything at once.
 
-**Reviewer failure handling** — a dispatch has failed when its tool result carries no receipt
-(API error text, "terminated early", a `maxTurns` cut-off) and the harvester wrote no
-checkpoint for it. Re-dispatch that task exactly once, in the same message as your next wave
-when the concurrency limit leaves one to send, otherwise on its own — never wait for an
-unrelated wave to finish before retrying, and never retry a task a second time (observed: 15
-failed dispatches in one round, all on the same gateway error, each retried against the same
-wall). If the retry also fails, do NOT drop the angle: execute it yourself, inline — read its
-prompt file and produce the same JSON completion receipt — and record in one line that the
-angle ran inline. An angle covered inline beats an angle silently skipped. When three or more
-dispatches in one wave fail with the same gateway/API error, the gateway is the problem:
-finish the round with inline fallbacks rather than burning the reviewer budget on retries.
+**Reviewer failure handling**. Retry a task once if it returns no valid completion receipt.
+When the retry fails, leave the round incomplete with its existing checkpoints and report
+the task ID. On resume, dispatch only pending tasks.
 
 ## Step 3 — Verify every candidate
 
@@ -220,7 +178,7 @@ bookkeeping, not judgement — do NOT do it by hand. Once `findings.sh pending` 
 run one command:
 
 ```
-PLUGIN_ROOT/scripts/findings.sh prepare --run-dir RUN_DIR
+PLUGIN_ROOT/scripts/findings.sh prepare --run-dir RUN_DIR --strict
 ```
 
 It normalizes each `file` to the packet's spelling, numbers the candidates, merges literal
@@ -236,16 +194,11 @@ for half of all verifier time), so they pass straight through to `findings.json`
 `passthrough=<n>`. When it says every candidate is a pass-through, skip to Step 4. Only pass
 `--verify-all` if the launch prompt explicitly asks for cleanup verification.
 
-Its only judgement call comes back to you: a **possible duplicates** list of candidates
-sitting within a few lines of each other in one file. Decide in one pass — candidates at the
-same place describing the SAME mechanism are one candidate (keep the most concrete failure
-scenario), candidates at the same place for DIFFERENT reasons are distinct and both stay;
-never let one angle's conclusions suppress another's. If any are true duplicates, re-run the
-command once with `--drop <indices of the weaker ones>` (indices are stable across re-runs);
-otherwise proceed. Nothing else about the prepared files needs your attention — never
-rewrite them, and never retype candidate objects into your own context.
+The helper may report candidates on nearby lines. Preserve them through verification so
+the main session can judge whether their mechanisms overlap. Read the prepared files as
+needed and pass their paths to the verifier.
 
-Then dispatch one `verifier` subagent (sonnet tier) per `verify-input-<n>.json`. Each
+Then dispatch one `verifier` subagent (medium complexity) per `verify-input-<n>.json`. Each
 verifier session re-pays the repo files it opens, so batches are sized to keep the dispatch
 count low; do not split them further. Give each verifier: the path of its batch file (the
 candidate objects carry their `index`), the path of `RUN_DIR/packet-addendum.md` (the packet
@@ -292,11 +245,9 @@ The transcript harvester writes each completed verifier array to
 wave. When control returns, Write only any missing verdict checkpoint in a message containing
 nothing but those fallback Writes.
 
-Do not apply the verdicts yourself — Step 4's command joins them onto the candidates, keeps
-CONFIRMED and PLAUSIBLE, and drops both REFUTED candidates and any batched candidate no
-verifier ruled on (a batched-but-unverified candidate is never promoted; only the cleanup
-pass-throughs `prepare` deliberately left out of the batches reach the report unverified, and
-they say so).
+Check that every scheduled batch has a valid receipt. Retry a missing or invalid batch
+once. If it still fails, report the round as incomplete and retain valid checkpoints.
+Step 4 joins the verdicts and preserves cleanup pass-throughs.
 
 ## Step 3.5 — Sweep for gaps (only when the angle list includes `design`)
 
@@ -307,21 +258,20 @@ placeholder: replace `{{VERIFIED_FINDINGS}}` with one line per surviving candida
 append exactly one task `{id: "sweep", angle: "sweep", wave: 2}` to the ready
 `review-plan.json` if it is not already present — the launcher declared that wave in
 `late_waves`, and appending a task to a declared late wave is the only plan change allowed
-after first-wave finalization. Then run `findings.sh pending`: dispatch sweep only when its ID
+after first-wave finalization. Then run `findings.sh pending`: dispatch sweep with `reviewer-high` only when its ID
 is returned, checkpoint its completion receipt to `out/candidates-sweep.json`, and re-run
 `findings.sh prepare` (it picks the planned task up and preserves existing numbering). Verify
-the batches that changed exactly as in Step 3. This dispatch sits outside the 12-reviewer
-budget: skip it only in non-adversarial rounds, never for budget reasons.
+the batches that changed exactly as in Step 3. The gap sweep has a slot of its own outside the first-wave budget.
 
 ## Step 4 — Final report
 
 Build the findings file with one command — never assemble, retype or hand-pick it:
 
 ```
-PLUGIN_ROOT/scripts/findings.sh build --run-dir RUN_DIR
+PLUGIN_ROOT/scripts/findings.sh build --run-dir RUN_DIR --strict
 ```
 
-It joins the verdicts onto the candidates, drops REFUTED and batched-but-unverified ones,
+It requires all planned verification batches, joins verdicts, drops REFUTED candidates,
 appends the cleanup pass-throughs (verdict `PLAUSIBLE`, `unverified: true`, a
 `verdict_evidence` that says no verifier ran), orders the survivors (most severe first,
 correctness before cleanup at equal severity) and writes `RUN_DIR/out/findings.json` — the
@@ -330,8 +280,7 @@ re-runs the round's `git diff` and marks every finding whose file changed since 
 was built with `stale: true` (a `STALE:` line lists the files) — the launching session
 re-checks those first. It prints the counts your stats line needs, including a per-class
 breakdown: only the bug-angle refutation rate says anything about whether verification is
-falsifying anything. If it warns that a `verdicts-<n>.json` does not match its batch, the
-join still lands by index; mention the mismatch in your stats line and carry on.
+falsifying anything. On a missing or invalid verdict batch, leave the round incomplete.
 
 **Report every finding that survived — there is no cap.** The old 12-object limit existed
 only because findings were once inlined in the final message; findings.json is a file, so

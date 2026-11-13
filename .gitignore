@@ -54,6 +54,7 @@ evals
 .tmp/
 docs/handoffs/
 .claude/plans/
+plugins/picture/app-icon-designer/materials/
 
 # private
 .private/

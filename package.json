@@ -1,0 +1,11 @@
+{
+  "name": "lkangd-agent-skills",
+  "version": "1.0.0",
+  "private": true,
+  "pi": {
+    "extensions": ["./plugins/engineering/code-review/pi/extension.ts"],
+    "skills": [],
+    "prompts": [],
+    "themes": []
+  }
+}

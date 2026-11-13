@@ -31,7 +31,7 @@
 #          file arriving after the first verification wave), a --drop correction, and a resume
 #          all work without invalidating verdicts already collected.
 #
-#        findings.sh build --run-dir DIR
+#        findings.sh build --run-dir DIR [--preview] [--strict]
 #          Join out/verdicts-*.json onto the normalized candidates, drop REFUTED and
 #          unverified ones, append the cleanup pass-throughs (verdict PLAUSIBLE, `unverified`
 #          true), mark findings whose file changed since launch (`stale` true), order the
@@ -124,6 +124,10 @@ def group_ordered(keyf):
 # cite files inconsistently (absolute, repo-relative, bare basename); grouping and the final
 # report need one spelling per file, and --stat is the authority on it.
 changed_files_json() {
+  if [ -r "$RUN_DIR/changed-files.json" ]; then
+    jq -ce 'if type == "array" and all(.[]; type == "string") then sort_by(-length) else error("invalid changed file list") end' "$RUN_DIR/changed-files.json"
+    return
+  fi
   local stat="$RUN_DIR/diff-stat.txt"
   if [ ! -r "$stat" ]; then echo '[]'; return 0; fi
   # The trailing "N files changed, …" summary has no "|" and is skipped.
@@ -376,6 +380,7 @@ EOF
 receipt_payload_json() {
   local file="$1" angle="$2" filter payload first_error
   filter='
+    if length == 1 then .[0] else error("expected exactly one JSON receipt") end |
     (if type == "array" then .
      elif type == "object" and .status == "completed" and (.findings | type) == "array"
        then .findings
@@ -383,7 +388,7 @@ receipt_payload_json() {
     | if any($findings[]; type != "object")
       then error("review findings must be objects")
       else {angle: $angle, findings: $findings} end'
-  if first_error="$(jq -c --arg angle "$angle" "$filter" "$file" 2>&1)"; then
+  if first_error="$(jq -ces --arg angle "$angle" "$filter" "$file" 2>&1)"; then
     printf '%s\n' "$first_error"
     return 0
   fi
@@ -395,7 +400,7 @@ receipt_payload_json() {
     inside == 1 { print }
   ' "$file")"
   if [ -n "$payload" ]; then
-    printf '%s\n' "$payload" | jq -c --arg angle "$angle" "$filter"
+    printf '%s\n' "$payload" | jq -ces --arg angle "$angle" "$filter"
   else
     printf '%s\n' "$first_error" >&2
     return 1
@@ -512,8 +517,18 @@ cmd_prepare() {
   for f in "$OUTDIR"/verify-input-*.json; do
     [ -e "$f" ] || continue
     n="$(basename "$f")"; n="${n#verify-input-}"; n="${n%.json}"
+    if [ "$STRICT" = "true" ] && ! verdict_batch_valid "$f" "$OUTDIR/verdicts-$n.json"; then
+      rm -f "$OUTDIR/verdicts-$n.json"
+    fi
     [ -f "$OUTDIR/verdicts-$n.json" ] || rm -f "$f"
   done
+  if [ "$STRICT" = "true" ]; then
+    for f in "$OUTDIR"/verdicts-*.json; do
+      [ -e "$f" ] || continue
+      n="${f##*verdicts-}"; n="${n%.json}"
+      [ -r "$OUTDIR/verify-input-$n.json" ] || rm -f "$f"
+    done
+  fi
   local taken='[]'
   taken="$({ for f in "$OUTDIR"/verify-input-*.json; do
                [ -e "$f" ] || continue
@@ -639,14 +654,16 @@ cmd_prepare() {
       --argjson verify_all "$VERIFY_ALL_JSON" \
       --argjson batchsize "$BATCH_SIZE")" || die "candidate preparation failed"
 
-  printf '%s' "$result" | jq --indent 1 '.normalized' > "$normalized_file" \
+  printf '%s' "$result" | jq --indent 1 '.normalized' > "$normalized_file.tmp" \
+    && mv -f "$normalized_file.tmp" "$normalized_file" \
     || die "cannot write $normalized_file"
   local count i num
   count="$(printf '%s' "$result" | jq '.batches | length')"
   i=0
   while [ "$i" -lt "$count" ]; do
     num="$(printf '%s' "$result" | jq -r ".batches[$i].n")"
-    printf '%s' "$result" | jq --indent 1 ".batches[$i].items" > "$OUTDIR/verify-input-$num.json" \
+    printf '%s' "$result" | jq --indent 1 ".batches[$i].items" > "$OUTDIR/verify-input-$num.json.tmp" \
+      && mv -f "$OUTDIR/verify-input-$num.json.tmp" "$OUTDIR/verify-input-$num.json" \
       || die "cannot write verify-input-$num.json"
     i=$((i + 1))
   done
@@ -710,6 +727,10 @@ diff_section_sums() { # diff-file scratch-dir
 # void by report time). Prints repo-relative paths; silent when the check cannot run (no diff
 # spec persisted, no git, committed range unchanged).
 stale_files() {
+  if [ -r "$RUN_DIR/stale-files.json" ]; then
+    jq -r '.[]' "$RUN_DIR/stale-files.json"
+    return
+  fi
   local diff_args repo scratch path sum
   [ -r "$RUN_DIR/launch-params.json" ] && [ -r "$RUN_DIR/raw_diff.txt" ] || return 0
   diff_args="$(jq -r '.diff_args // ""' "$RUN_DIR/launch-params.json" 2>/dev/null)" || return 0
@@ -744,28 +765,40 @@ stale_files() {
   return 0
 }
 
-# Every verdicts-<n>.json should rule on exactly the indices of verify-input-<n>.json. A
-# mismatch is not fatal — the join is by index, so the verdicts still land on the right
-# candidates — but it means a verifier wandered, and a batch it skipped shows up as unverified.
-warn_verdict_batches() {
-  local f n mismatch
-  for f in "$OUTDIR"/verdicts-*.json; do
-    [ -e "$f" ] || continue
-    n="$(basename "$f")"; n="${n#verdicts-}"; n="${n%.json}"
-    [ -r "$OUTDIR/verify-input-$n.json" ] || continue
-    mismatch="$(jq -n --slurpfile v "$f" --slurpfile i "$OUTDIR/verify-input-$n.json" '
-      ($v[0] | if type == "array" then [ .[] | select(type == "object" and has("index")) | .index | tonumber | trunc ] else [] end | sort) as $ruled
-      | ($i[0] | if type == "array" then [ .[] | select(type == "object" and has("index")) | .index | tonumber | trunc ] else [] end | sort) as $asked
-      | if $ruled == $asked then empty
-        else "expected \($asked | map(tostring) | join(",")); got \($ruled | map(tostring) | join(","))" end' 2>/dev/null)" || continue
-    [ -z "$mismatch" ] || echo "warning: verdicts-$n.json does not match verify-input-$n.json ($mismatch)" >&2
+# An independent verifier must rule exactly once on every candidate in its batch.
+verdict_batch_valid() {
+  local batch="$1" verdicts="$2"
+  [ -r "$batch" ] && [ -r "$verdicts" ] || return 1
+  jq -en --slurpfile v "$verdicts" --slurpfile i "$batch" '
+    ($v | length) == 1 and ($i | length) == 1
+    and ($v[0] | type) == "array" and ($i[0] | type) == "array"
+    and all($v[0][]; type == "object" and (.index | type) == "number"
+      and (.verdict == "CONFIRMED" or .verdict == "PLAUSIBLE" or .verdict == "REFUTED")
+      and (.evidence | type) == "string" and (.evidence | test("\\S")))
+    and ([$v[0][].index] | sort) == ([$i[0][].index] | sort)
+  ' >/dev/null 2>&1
+}
+
+check_verdict_batches() {
+  local file number verdicts
+  for file in "$OUTDIR"/verify-input-*.json; do
+    [ -e "$file" ] || continue
+    number="${file##*verify-input-}"; number="${number%.json}"
+    verdicts="$OUTDIR/verdicts-$number.json"
+    if ! verdict_batch_valid "$file" "$verdicts"; then
+      if [ "$STRICT" = "true" ]; then
+        die "missing or invalid verdicts-$number.json for verify-input-$number.json" 2
+      elif [ -e "$verdicts" ]; then
+        echo "warning: verdicts-$number.json does not match verify-input-$number.json" >&2
+      fi
+    fi
   done
-  return 0
 }
 
 cmd_build() {
   KNOWN_JSON="$(changed_files_json)" || die "cannot read diff-stat.txt"
-  local plan normalized_file="$OUTDIR/normalized-candidates.json"
+  local plan normalized_file="$OUTDIR/normalized-candidates.json" output="$OUTDIR/findings.json"
+  [ "$PREVIEW" = "false" ] || output="$OUTDIR/verified-preview.json"
   plan="$(review_plan_json)" || exit 1
   collect_receipts "$plan"
   require_no_pending
@@ -782,7 +815,7 @@ cmd_build() {
     # empty report is the correct result for it, not an error.
     [ "$(printf '%s' "$PLAN_CANDIDATES" | jq 'length')" = "0" ] \
       || die "out/normalized-candidates.json missing — run \`findings.sh prepare\` first" 2
-    printf '[]\n' > "$OUTDIR/findings.json" || die "cannot write findings.json"
+    printf '[]\n' > "$output.tmp" && mv -f "$output.tmp" "$output" || die "cannot write $output"
     echo "wrote out/findings.json with 0 finding(s)"
     echo "STATS: 0 raw, 0 verified, 0 refuted"
     echo "BY CLASS: bug-angle 0 raw/0 refuted; cleanup 0 raw/0 refuted"
@@ -798,7 +831,7 @@ cmd_build() {
     "$normalized_file")" || die "cannot read $normalized_file"
   [ "$found" = "1" ] || [ "$needs_verdicts" = "false" ] \
     || die "no out/verdicts-*.json — verification has not run" 2
-  warn_verdict_batches
+  check_verdict_batches
 
   local verdicts
   verdicts="$({ for f in "$OUTDIR"/verdicts-*.json; do
@@ -854,8 +887,8 @@ cmd_build() {
       --argjson verdicts "$verdicts" \
       --argjson stale "$stale_json")" || die "findings assembly failed"
 
-  printf '%s' "$result" | jq --indent 1 '.findings' > "$OUTDIR/findings.json" \
-    || die "cannot write findings.json"
+  printf '%s' "$result" | jq --indent 1 '.findings' > "$output.tmp" \
+    && mv -f "$output.tmp" "$output" || die "cannot write $output"
 
   printf '%s' "$result" | jq -r '
     "wrote out/findings.json with \(.findings | length) finding(s)",
@@ -876,7 +909,7 @@ cmd_build() {
 usage() {
   echo "usage: findings.sh pending --run-dir DIR" >&2
   echo "       findings.sh prepare --run-dir DIR [--batch-size N] [--drop 3,7] [--verify-all]" >&2
-  echo "       findings.sh build --run-dir DIR" >&2
+  echo "       findings.sh build --run-dir DIR [--preview] [--strict]" >&2
   exit 1
 }
 
@@ -886,12 +919,16 @@ RUN_DIR=""
 BATCH_SIZE=12
 DROP=""
 VERIFY_ALL_JSON=false
+PREVIEW=false
+STRICT=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir) [ $# -ge 2 ] || usage; RUN_DIR="$2"; shift 2 ;;
     --batch-size) [ $# -ge 2 ] || usage; BATCH_SIZE="$2"; shift 2 ;;
     --drop) [ $# -ge 2 ] || usage; DROP="$2"; shift 2 ;;
     --verify-all) VERIFY_ALL_JSON=true; shift ;;
+    --preview) PREVIEW=true; shift ;;
+    --strict) STRICT=true; shift ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac

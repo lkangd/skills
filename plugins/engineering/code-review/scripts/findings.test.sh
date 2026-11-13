@@ -164,6 +164,13 @@ EOF
   grep -q 'review tasks incomplete: correctness-2' "$run_dir/error.log" \
     || fail "build did not explain the missing planned slice"
 
+  : > "$run_dir/out/candidates-correctness-2.json"
+  assert_json_output "$(bash "$FINDINGS" pending --run-dir "$run_dir")" \
+    'length == 1 and .[0] == "correctness-2"' "zero-byte receipt counted as completed"
+  printf '%s\n' '{"status":"completed","findings":[]}' '[]' \
+    > "$run_dir/out/candidates-correctness-2.json"
+  assert_json_output "$(bash "$FINDINGS" pending --run-dir "$run_dir")" \
+    'length == 1 and .[0] == "correctness-2"' "multiple JSON documents counted as one receipt"
   printf '%s\n' '{"status":"completed","findings":[]}' \
     > "$run_dir/out/candidates-correctness-2.json"
   assert_json_output "$(bash "$FINDINGS" pending --run-dir "$run_dir")" \
@@ -742,8 +749,12 @@ run_verdict_batch_mismatch_test() {
   jq '[.[0] | {index, verdict: "CONFIRMED", evidence: "ok"}]' \
     "$run_dir/out/verify-input-1.json" > "$run_dir/out/verdicts-1.json"
 
+  if bash "$FINDINGS" build --run-dir "$run_dir" --strict >/dev/null 2> "$run_dir/error.log"; then
+    fail "strict build published a partial batch"
+  fi
+  [ ! -e "$run_dir/out/findings.json" ] || fail "strict build left a partial report"
   bash "$FINDINGS" build --run-dir "$run_dir" >/dev/null 2> "$run_dir/error.log" \
-    || fail "build rejected a verdicts file with a partial batch"
+    || fail "build rejected a legacy verdicts file with a partial batch"
   grep -q 'verdicts-1.json does not match verify-input-1.json' "$run_dir/error.log" \
     || fail "build did not warn about the partial verdicts batch"
   assert_json "$run_dir/out/findings.json" 'length == 1'
