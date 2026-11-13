@@ -14,12 +14,12 @@ and Pi 1.5.2. Pi Git installation also uses its configured package manager.
 
 | Host | Install | Invoke |
 |---|---|---|
-| Claude Code | `/plugin marketplace add lkangd/agent-skills` then `/plugin install code-review@lkangd-skills` | `/code-review <target>`, `/code-review:adversarial <target>`, `/code-review:setup` |
-| Codex | `codex plugin marketplace add lkangd/agent-skills` then `codex plugin add code-review@lkangd-skills` | `$code-review:code-review <target>`, or pass `adversarial <target>`, `resume [<run-dir>]` or `setup` to the same skill |
-| Pi | `pi install git:github.com/lkangd/agent-skills` | `/code-review <target>`, `/code-review:adversarial <target>`, `/code-review:setup` |
+| Claude Code | `/plugin marketplace add lkangd/skills` then `/plugin install code-review@lkangd-skills` | `/code-review <target>`, `/code-review:adversarial <target>`, `/code-review:setup` |
+| Codex | `codex plugin marketplace add lkangd/skills` then `codex plugin add code-review@lkangd-skills` | `$code-review:code-review <target>`, or pass `adversarial <target>`, `resume [<run-dir>]` or `setup` to the same skill |
+| Pi | `pi install git:github.com/lkangd/skills` | `/code-review <target>`, `/code-review:adversarial <target>`, `/code-review:setup` |
 
-For development, add the repository checkout as the Codex marketplace or run
-`pi install /absolute/path/to/agent-skills`. Start a new host session in the project
+For local development, run `codex plugin marketplace add .` or `pi install .` from
+the root of the checkout. Start a new host session in the project
 after installation. The Codex entry uses the bundled local MCP launcher. Approve the
 displayed repository when it prompts on first use. Each command launches one independent
 scheduler per round. The invoking session waits for its final result before acting on findings.

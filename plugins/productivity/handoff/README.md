@@ -4,14 +4,21 @@ Summarize the current conversation into a handoff document so a fresh agent can 
 
 ## Usage
 
-Install from a local checkout. In Claude Code, run `/plugin install handoff --marketplace /absolute/path/to/agent-skills`. In Codex, run:
+In a Claude Code session, add the marketplace and install handoff.
+
+```text
+/plugin marketplace add lkangd/skills
+/plugin install handoff@lkangd-skills
+```
+
+In Codex, run the following commands.
 
 ```sh
-codex plugin marketplace add /absolute/path/to/agent-skills
+codex plugin marketplace add lkangd/skills
 codex plugin add handoff@lkangd-skills
 ```
 
-In Pi, run `pi install /absolute/path/to/agent-skills` to install the repository package, which includes both `handoff` and `wrapup`.
+In Pi, run `pi install git:github.com/lkangd/skills` to install the repository package, which includes both `handoff` and `wrapup`.
 
 Start a fresh session in the target workspace and use the entry point for your host.
 

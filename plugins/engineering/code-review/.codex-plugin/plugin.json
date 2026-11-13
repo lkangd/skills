@@ -3,6 +3,6 @@
   "version": "1.0.5",
   "description": "Parallel code review, independent verification, fixes, and resumable adversarial rounds.",
   "author": { "name": "Curtis Liong", "email": "lkangd@gmail.com" },
-  "repository": "https://github.com/lkangd/agent-skills",
+  "repository": "https://github.com/lkangd/skills",
   "mcpServers": "./codex-mcp.json"
 }

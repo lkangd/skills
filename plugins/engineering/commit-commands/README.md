@@ -139,7 +139,7 @@ Cleans up local branches that have been deleted from the remote repository.
 
 ## Installation
 
-This plugin is included in the lkangd/agent-skills Code repository.
+This plugin is included in the [lkangd/skills repository](https://github.com/lkangd/skills).
 
 ## Best Practices
 

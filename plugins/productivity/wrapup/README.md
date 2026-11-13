@@ -4,17 +4,24 @@ Finish a session with current-worktree checks, full test gates, scoped commits, 
 
 ## Usage and dependency
 
-Install from a local checkout. In Claude Code, run `/plugin install wrapup --marketplace /absolute/path/to/agent-skills`. The Claude manifest declares `handoff` as a dependency, so installation also enables it from the same marketplace.
+In a Claude Code session, add the marketplace and install wrapup.
 
-In Codex, install both plugins:
+```text
+/plugin marketplace add lkangd/skills
+/plugin install wrapup@lkangd-skills
+```
+
+Claude Code also installs and enables `handoff` from the same marketplace.
+
+In Codex, install both plugins.
 
 ```sh
-codex plugin marketplace add /absolute/path/to/agent-skills
+codex plugin marketplace add lkangd/skills
 codex plugin add handoff@lkangd-skills
 codex plugin add wrapup@lkangd-skills
 ```
 
-In Pi, run `pi install /absolute/path/to/agent-skills`. The repository package provides both skills. If a personal or project skill also uses the name `handoff`, ensure Pi discovers the package's copy before running wrapup.
+In Pi, run `pi install git:github.com/lkangd/skills`. The repository package provides both skills. If a personal or project skill also uses the name `handoff`, ensure Pi discovers the package's copy before running wrapup.
 
 Start a fresh session in the target workspace and explicitly invoke wrapup.
 

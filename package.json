@@ -2,6 +2,10 @@
   "name": "lkangd-agent-skills",
   "version": "1.0.0",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lkangd/skills.git"
+  },
   "pi": {
     "extensions": ["./plugins/engineering/code-review/pi/extension.ts"],
     "skills": [

@@ -6,19 +6,15 @@ user confirms the proposal. Requires Git and Python 3; no Python packages are ne
 
 ## Install in Codex
 
-From a checkout of this repository:
+Add the marketplace and install the plugin:
 
 ```bash
-codex plugin marketplace add /absolute/path/to/agent-skills
+codex plugin marketplace add lkangd/skills
 codex plugin add package-release@lkangd-skills
 ```
 
-Once these files are published to the repository, remote installation is also available:
-
-```bash
-codex plugin marketplace add lkangd/agent-skills
-codex plugin add package-release@lkangd-skills
-```
+For local development, run `codex plugin marketplace add .` from the checkout root,
+then install the plugin with the same `codex plugin add` command.
 
 In the target project's Codex CLI or IDE conversation, invoke
 `$package-release:package-release` (the plugin-qualified name shown by Codex).
@@ -28,7 +24,7 @@ If it does not appear in an existing conversation, start a new conversation.
 ## Install in Claude Code
 
 ```text
-/plugin marketplace add lkangd/agent-skills
+/plugin marketplace add lkangd/skills
 /plugin install package-release@lkangd-skills
 ```
 

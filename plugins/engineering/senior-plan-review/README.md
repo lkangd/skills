@@ -17,7 +17,7 @@ plans and complete for HIGH/CRITICAL ones; it never approves anything by itself.
 From this marketplace:
 
 ```
-/plugin marketplace add lkangd/agent-skills   # once, if not already added
+/plugin marketplace add lkangd/skills   # once, if not already added
 /plugin install senior-plan-review@lkangd-skills
 ```
 
