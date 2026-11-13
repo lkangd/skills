@@ -184,7 +184,15 @@ class Change:
 
 
 def split_paths(raw):
-    return [os.fsdecode(path) for path in raw.split(b"\0") if path]
+    paths = []
+    for path in raw.split(b"\0"):
+        if not path:
+            continue
+        try:
+            paths.append(path.decode("utf-8"))
+        except UnicodeDecodeError:
+            raise ValueError(f"Cannot review a Git path that is not UTF-8: {path!r}") from None
+    return paths
 
 
 def diff_changes(repo, args, paths, env=None):

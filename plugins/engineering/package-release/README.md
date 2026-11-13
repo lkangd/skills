@@ -40,9 +40,9 @@ The shared skill preserves Claude's `disable-model-invocation: true` setting.
 Both hosts load `skills/package-release/SKILL.md` and the same bundled Python
 scripts. Root `plugin.json` supplies the portable plugin metadata;
 `.claude-plugin/plugin.json` supplies Claude's metadata. Keep their name, version,
-description, and author in sync. The Codex marketplace at
-`.agents/plugins/marketplace.json` currently lists only this migrated plugin;
-Claude's marketplace continues to list the existing collection.
+description, and author in sync. Both installation paths use the repository's
+[marketplace manifest](../../../.claude-plugin/marketplace.json), which lists
+`package-release` alongside the other plugins.
 
 Scripts run from the target project's Git root using absolute paths resolved from
 the loaded skill directory. They must work from an installed cache as well as a

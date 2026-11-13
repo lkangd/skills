@@ -37,8 +37,9 @@ set -u
 shopt -u patsub_replacement 2>/dev/null || true
 
 usage() {
-  echo "usage: run-orchestrator.sh --runner '<cmd prefix>' --run-dir <dir> --target '<spec>' --diff-args '<git diff arguments>' --angles '<list>' [--concurrency <n>] [--known-issues-file <path>] [--spec-file <path>]..." >&2
-  echo "       run-orchestrator.sh --resume --runner '<cmd prefix>' --run-dir <dir>" >&2
+  echo "usage: run-orchestrator.sh --runner '<cmd prefix>' --run-dir <dir> --target '<spec>' (--diff-args '<git diff arguments>' | --snapshot) --angles '<list>' [--concurrency <n>] [--known-issues-file <path>] [--spec-file <path>]..." >&2
+  echo "       run-orchestrator.sh --resume --run-dir <dir> [--runner '<cmd prefix>']" >&2
+  echo "       --snapshot uses the saved external-snapshot.json in the run directory." >&2
   exit 2
 }
 
@@ -176,7 +177,6 @@ fi
 CONVENTION_DOC_LIMIT=300   # lines kept per convention document
 UNTRACKED_FILE_LIMIT=400   # lines kept per untracked file
 CONVENTIONS_FOUND=0
-UNTRACKED_LINES=0
 
 # Repo-relative paths of the convention documents that apply to this change: root-level
 # standards files plus CLAUDE.md / AGENTS.md in every directory (and parent) a changed or
@@ -268,11 +268,10 @@ addendum_excerpt() {
 }
 
 write_addendum() {
-  local docs untracked f n
+  local docs untracked f
   untracked="$(untracked_files)"
   docs="$(convention_docs "$untracked")"
   CONVENTIONS_FOUND=0; [ -z "$docs" ] || CONVENTIONS_FOUND=1
-  UNTRACKED_LINES=0
   # Untracked files are in no git diff, so `findings.sh build` cannot re-diff them to detect
   # edits made during the review; it compares these launch-time checksums instead.
   : > "$RUN_DIR/untracked-sums.txt"
@@ -326,10 +325,6 @@ EOF
           echo
           while IFS= read -r f; do
             [ -n "$f" ] || continue
-            # Counted uncapped: the whole file is under review even when only its head is
-            # quoted, and the split threshold is about how much a reviewer must cover.
-            n="$(wc -l < "$REPO_ROOT/$f" | tr -d ' ')"
-            UNTRACKED_LINES=$((UNTRACKED_LINES + n))
             addendum_excerpt "$f" "$UNTRACKED_FILE_LIMIT"
           done <<EOF
 $untracked

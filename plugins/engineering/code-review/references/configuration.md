@@ -16,7 +16,11 @@ steps below before launching a runner.
 4. Pass the confirmed JSON on stdin to the same command with `config-save`. Use a quoted
    heredoc delimiter if passing it from a shell. The command validates and saves the file
    atomically. If validation fails, correct the proposal with the user and confirm it again.
-   For explicit setup, finish after saving.
+5. From the Git root, run `git check-ignore -- .code-review/config.local.json .code-review/runs/example/out/findings.json`.
+   If either path is missing from the output, ask whether to add `/.code-review/` to the
+   root `.gitignore`. If it has an exact `.claude/code-review/` entry and that directory is
+   gone, offer to replace that entry with the new rule. Apply the user's choice, then
+   finish explicit setup or continue the requested review.
 
 The template includes every required field.
 

@@ -35,8 +35,8 @@
 #          Join out/verdicts-*.json onto the normalized candidates, drop REFUTED and
 #          unverified ones, append the cleanup pass-throughs (verdict PLAUSIBLE, `unverified`
 #          true), mark findings whose file changed since launch (`stale` true), order the
-#          survivors, and write out/findings.json. Prints the numbers the orchestrator's stats
-#          line needs.
+#          survivors, and write out/findings.json. Strict mode requires a valid verdict for
+#          every candidate scheduled for verification.
 #
 # Exit codes: 0 ok (including a round where nothing was found), 1 usage/IO error, 2 a
 # pipeline step was skipped (build before any verdicts exist).
@@ -51,6 +51,7 @@ command -v jq >/dev/null 2>&1 || die "jq is required but not on PATH"
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)" || die "cannot resolve plugin root"
 # shellcheck source=review-plan.sh
 . "$PLUGIN_ROOT/scripts/review-plan.sh" || die "cannot load the review-plan schema helper"
+. "$PLUGIN_ROOT/scripts/verdict-batch.sh" || die "cannot load the verdict batch validator"
 
 # jq helpers shared by both subcommands. Two things need care against the Python reference
 # these were ported from: jq's sort_by breaks ties by comparing the values themselves, where
@@ -765,20 +766,6 @@ stale_files() {
   return 0
 }
 
-# An independent verifier must rule exactly once on every candidate in its batch.
-verdict_batch_valid() {
-  local batch="$1" verdicts="$2"
-  [ -r "$batch" ] && [ -r "$verdicts" ] || return 1
-  jq -en --slurpfile v "$verdicts" --slurpfile i "$batch" '
-    ($v | length) == 1 and ($i | length) == 1
-    and ($v[0] | type) == "array" and ($i[0] | type) == "array"
-    and all($v[0][]; type == "object" and (.index | type) == "number"
-      and (.verdict == "CONFIRMED" or .verdict == "PLAUSIBLE" or .verdict == "REFUTED")
-      and (.evidence | type) == "string" and (.evidence | test("\\S")))
-    and ([$v[0][].index] | sort) == ([$i[0][].index] | sort)
-  ' >/dev/null 2>&1
-}
-
 check_verdict_batches() {
   local file number verdicts
   for file in "$OUTDIR"/verify-input-*.json; do
@@ -833,9 +820,13 @@ cmd_build() {
     || die "no out/verdicts-*.json — verification has not run" 2
   check_verdict_batches
 
-  local verdicts
+  local verdicts batch
   verdicts="$({ for f in "$OUTDIR"/verdicts-*.json; do
                   [ -e "$f" ] || continue
+                  if [ "$STRICT" = "true" ]; then
+                    batch="${f##*verdicts-}"
+                    [ -r "$OUTDIR/verify-input-$batch" ] || continue
+                  fi
                   jq -c 'if type != "array" then error("not a JSON array") else . end
                          | [ .[] | select(type == "object" and has("index")) ]' "$f" \
                     || die "cannot parse $f"
@@ -886,6 +877,10 @@ cmd_build() {
     ' --argjson candidates "$(cat "$normalized_file")" \
       --argjson verdicts "$verdicts" \
       --argjson stale "$stale_json")" || die "findings assembly failed"
+
+  if [ "$STRICT" = "true" ] && [ "$(printf '%s' "$result" | jq '.unverified')" != "0" ]; then
+    die "verification is incomplete — run \`findings.sh prepare --strict\` and verify the remaining batches" 2
+  fi
 
   printf '%s' "$result" | jq --indent 1 '.findings' > "$output.tmp" \
     && mv -f "$output.tmp" "$output" || die "cannot write $output"

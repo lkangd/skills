@@ -37,6 +37,8 @@ done
 [ -n "$SESSION_ID" ] || [ -n "$TRANSCRIPT" ] || usage
 [ "$WATCH" = "0" ] || [ -n "$PARENT_PID" ] || usage
 command -v jq >/dev/null 2>&1 || die "jq is required but not on PATH"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)" || die "cannot resolve script directory"
+. "$SCRIPT_DIR/verdict-batch.sh" || die "cannot load the verdict batch validator"
 
 RUN_DIR_ARG="$RUN_DIR"
 RUN_DIR="$(cd "$RUN_DIR" 2>/dev/null && pwd -P)" || die "no such run dir: $RUN_DIR_ARG"
@@ -124,7 +126,7 @@ payload_from_event() {
 }
 
 checkpoint_is_valid() {
-  local destination="$1" kind="$2" key="$3" expected_indices
+  local destination="$1" kind="$2" key="$3"
   [ -r "$destination" ] || return 1
   if [ "$kind" = "candidate" ]; then
     jq -e 'type == "object" and .status == "completed"
@@ -132,20 +134,7 @@ checkpoint_is_valid() {
            and all(.findings[]; type == "object")' \
       "$destination" >/dev/null 2>&1
   else
-    expected_indices="$(jq -ce '
-      if type == "array" and all(.[]; type == "object" and (.index | type) == "number")
-      then [.[].index] | sort
-      else error("invalid verifier input") end' "$OUTDIR/verify-input-$key.json" 2>/dev/null)" \
-      || return 1
-    jq -e --argjson expected_indices "$expected_indices" '
-      type == "array"
-      and all(.[]; type == "object"
-                   and (.index | type) == "number"
-                   and (.verdict == "CONFIRMED" or .verdict == "PLAUSIBLE"
-                        or .verdict == "REFUTED")
-                   and (.evidence | type) == "string")
-      and ([.[].index] | sort) == $expected_indices' \
-      "$destination" >/dev/null 2>&1
+    verdict_batch_valid "$OUTDIR/verify-input-$key.json" "$destination"
   fi
 }
 

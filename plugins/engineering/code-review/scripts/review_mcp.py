@@ -236,7 +236,7 @@ class Launcher:
             if method == "initialize":
                 result = {"protocolVersion": params.get("protocolVersion", "2025-03-26"),
                           "capabilities": {"tools": {}},
-                          "serverInfo": {"name": "code-review", "version": "1.0.4"}}
+                          "serverInfo": {"name": "code-review", "version": "1.0.5"}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":

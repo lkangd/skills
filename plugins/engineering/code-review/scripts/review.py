@@ -275,9 +275,7 @@ def append_sweep(run, repo, data, plan, profiles):
         changes.append(Change(name, patch, data["weights"][index]))
     window = profiles["high"].get("context_window")
     overhead = len(data["header"].encode()) + len(prompt.encode()) + 8000
-    available = (window or 100_000) * 2 - overhead
-    total = sum(len(change.patch.encode()) for change in changes)
-    groups = [changes] if total <= available else balance(changes, 13, window, overhead)
+    groups = balance(changes, 13, window, overhead, prefer_unsplit=True)
     for index, group in enumerate(groups, 1):
         task_id = f"sweep-{index}" if len(groups) > 1 else "sweep"
         diff = "\n".join(change.patch for change in group)
@@ -326,14 +324,13 @@ def review_harness(review):
     return review.get("harness", "claude" if review.get("runner") else review["backend"])
 
 
-def publish_round(project, repo, review, number, changes, known):
+def publish_round(project, repo, review, number, changes, workspace_state, known):
     scratch = project / f".preparing-{number}"
     if scratch.is_symlink():
         raise ValueError("review staging directory must not be a symbolic link")
     if scratch.exists():
         shutil.rmtree(scratch)
     scratch.mkdir()
-    workspace_state = workspace_fingerprints(repo, (item.path for item in changes))
     run = project / f"round-{number}"
     if review_harness(review) == "claude":
         write_json(scratch / "external-snapshot.json", {
@@ -356,6 +353,7 @@ def publish_round(project, repo, review, number, changes, known):
 def start(repo, args, config):
     selection = target(repo, args.kind, args.values)
     changes = snapshot(repo, selection)
+    workspace_state = workspace_fingerprints(repo, (item.path for item in changes))
     if args.mode == "adversarial" and args.kind in ("commit", "branch", "staged"):
         selection["untracked_state"] = untracked_state(repo)
         if args.kind != "staged":
@@ -393,7 +391,7 @@ def start(repo, args, config):
         selection["staged_tree"], selection["staged_worktree"] = staged_scope(repo, project, selection)
     write_json(project / "run.json", review)
     with locked(project):
-        run = publish_round(project, repo, review, 1, changes, "(none)")
+        run = publish_round(project, repo, review, 1, changes, workspace_state, "(none)")
         return run_and_report(run, repo, review)
 
 
@@ -550,7 +548,8 @@ def next_round(repo, args):
         run = check_paths(repo, project / f"round-{number}")
         if not run.exists():
             changes = snapshot(repo, review["target"], True, project)
-            publish_round(project, repo, review, number, changes, args.known_issues)
+            workspace_state = workspace_fingerprints(repo, (item.path for item in changes))
+            publish_round(project, repo, review, number, changes, workspace_state, args.known_issues)
         return run_and_report(run, repo, review)
 
 

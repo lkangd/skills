@@ -760,6 +760,39 @@ run_verdict_batch_mismatch_test() {
   assert_json "$run_dir/out/findings.json" 'length == 1'
 }
 
+run_missing_verdict_batch_test() {
+  local run_dir="$TMP_ROOT/missing-verdict-batch" batch
+  new_run "$run_dir"
+  write_plan "$run_dir" ready correctness correctness 1
+  jq -n --argjson f "$(finding_json major "A" src/a.js 1)" \
+    --argjson g "$(finding_json major "B" src/a.js 20)" \
+    '{status: "completed", findings: [$f, $g]}' > "$run_dir/out/candidates-correctness.json"
+  bash "$FINDINGS" prepare --run-dir "$run_dir" --strict --batch-size 1 >/dev/null
+  for batch in 1 2; do
+    jq '[.[] | {index, verdict: "CONFIRMED", evidence: "ok"}]' \
+      "$run_dir/out/verify-input-$batch.json" > "$run_dir/out/verdicts-$batch.json"
+  done
+
+  rm "$run_dir/out/verify-input-2.json"
+  for batch in orphan missing; do
+    if [ "$batch" = "missing" ]; then
+      rm "$run_dir/out/verdicts-2.json"
+    fi
+    if bash "$FINDINGS" build --run-dir "$run_dir" --strict >/dev/null 2> "$run_dir/error.log"; then
+      fail "strict build published a report with a $batch verifier batch"
+    fi
+    [ ! -e "$run_dir/out/findings.json" ] || fail "strict build left a partial report"
+    grep -q 'verification is incomplete' "$run_dir/error.log" || fail "strict build did not explain the missing verdict"
+  done
+
+  bash "$FINDINGS" prepare --run-dir "$run_dir" --strict --batch-size 1 >/dev/null
+  assert_json "$run_dir/out/verify-input-2.json" 'length == 1 and .[0].index == 2'
+  jq '[.[] | {index, verdict: "CONFIRMED", evidence: "recovered"}]' \
+    "$run_dir/out/verify-input-2.json" > "$run_dir/out/verdicts-2.json"
+  bash "$FINDINGS" build --run-dir "$run_dir" --strict >/dev/null
+  assert_json "$run_dir/out/findings.json" 'length == 2'
+}
+
 extract_json_example() {
   local file="$1"
   local line block='' in_block=0
@@ -832,6 +865,7 @@ run_verbatim_repeat_test
 run_manual_drop_survivor_test
 run_stale_finding_test
 run_verdict_batch_mismatch_test
+run_missing_verdict_batch_test
 run_contract_test
 
 printf 'ok - completion receipts and resume checkpoints\n'

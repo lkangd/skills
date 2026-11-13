@@ -34,7 +34,7 @@ jq -n '{
 }' > "$RUN_DIR/review-plan.json"
 printf '%s\n' '{"status":"completed","findings":[1]}' \
   > "$RUN_DIR/out/candidates-correctness.json"
-printf '%s\n' '[{"index":99,"verdict":"CONFIRMED","evidence":"stale"}]' \
+printf '%s\n' '[{"index":1,"verdict":"CONFIRMED","evidence":" \t"}]' \
   > "$RUN_DIR/out/verdicts-1.json"
 
 jq -cn --arg prompt "Read and execute the instructions in $RUN_DIR/prompts/correctness.md." '{
@@ -113,7 +113,7 @@ attempt=0
 while [ "$attempt" -lt 30 ]; do
   if jq -e '.status == "completed" and .findings == []' \
       "$RUN_DIR/out/candidates-correctness.json" >/dev/null 2>&1 \
-    && jq -e 'length == 1 and .[0].index == 1 and .[0].verdict == "CONFIRMED"' \
+    && jq -e 'length == 1 and .[0].index == 1 and .[0].evidence == "verified"' \
       "$RUN_DIR/out/verdicts-1.json" >/dev/null 2>&1 \
     && jq -e '.status == "completed" and (.findings | length) == 1' \
       "$RUN_DIR/out/candidates-callers.json" >/dev/null 2>&1; then
@@ -129,7 +129,7 @@ wait "$HARVESTER_PID"
 jq -e '.status == "completed" and .findings == []' \
   "$RUN_DIR/out/candidates-correctness.json" >/dev/null \
   || fail "completed reviewer result was not checkpointed"
-jq -e 'length == 1 and .[0].index == 1 and .[0].verdict == "CONFIRMED"' \
+jq -e 'length == 1 and .[0].index == 1 and .[0].evidence == "verified"' \
   "$RUN_DIR/out/verdicts-1.json" >/dev/null \
   || fail "completed verifier result was not checkpointed"
 [ ! -e "$RUN_DIR/out/candidates-reuse.json" ] \
