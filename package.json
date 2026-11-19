@@ -10,6 +10,7 @@
     "extensions": ["./plugins/engineering/code-review/pi/extension.ts"],
     "skills": [
       "./plugins/engineering/code-review/skills",
+      "./plugins/engineering/my-workflows/skills",
       "./plugins/engineering/plugin-portability/skills/plugin-portability",
       "./plugins/productivity/handoff/skills/handoff",
       "./plugins/productivity/wrapup/skills/wrapup"

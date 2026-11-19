@@ -16,7 +16,7 @@ MARKETPLACE_INSTALL = re.compile(
     r"(?:/plugin|\bclaude\s+plugin)\s+install\s+[^\s`|]+\s+--marketplace(?:=|\s+)" + SOURCE
 )
 PLUGIN_INSTALL = re.compile(
-    r"(?:/plugin\s+install|\bclaude\s+plugin\s+install|\bcodex\s+plugin\s+add)\s+"
+    r"(/plugin\s+install|\bclaude\s+plugin\s+install|\bcodex\s+plugin\s+add)\s+"
     r"([\w-]+)@([^\s`|]+)"
 )
 PI_INSTALL = re.compile(r"\bpi\s+install\s+" + SOURCE)
@@ -44,6 +44,11 @@ def check(root):
     catalog = read_json(root / ".claude-plugin/marketplace.json")
     marketplace = catalog["name"]
     plugins = {plugin["name"] for plugin in catalog["plugins"]}
+    codex_marketplaces = {marketplace: plugins}
+    codex_catalog_path = root / ".agents/plugins/marketplace.json"
+    if codex_catalog_path.is_file():
+        codex_catalog = read_json(codex_catalog_path)
+        codex_marketplaces[codex_catalog["name"]] = {plugin["name"] for plugin in codex_catalog["plugins"]}
     git_urls = {repository_url, repository_url + ".git"}
     marketplace_sources = LOCAL_SOURCES | git_urls | {slug, f"git@github.com:{slug}.git"}
     pi_source = "git:github.com/" + slug
@@ -65,9 +70,10 @@ def check(root):
                         errors.append(
                             f"{location}: use marketplace source {slug} or . from the checkout root, found {source}"
                         )
-            for name, catalog_name in PLUGIN_INSTALL.findall(line):
-                if catalog_name != marketplace or name not in plugins:
-                    errors.append(f"{location}: {name}@{catalog_name} is not in the {marketplace} marketplace")
+            for command, name, catalog_name in PLUGIN_INSTALL.findall(line):
+                marketplaces = codex_marketplaces if command.startswith("codex") else {marketplace: plugins}
+                if name not in marketplaces.get(catalog_name, ()):
+                    errors.append(f"{location}: {name}@{catalog_name} is not in a registered marketplace for {command}")
             for source in sources(PI_INSTALL, line):
                 if source not in pi_sources:
                     errors.append(

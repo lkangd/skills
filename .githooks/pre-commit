@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-if git diff --cached --quiet -- package.json .claude-plugin/marketplace.json plugins scripts/lint-plugin-install.py .githooks; then
+if git diff --cached --quiet -- package.json .claude-plugin/marketplace.json .agents/plugins/marketplace.json plugins scripts/lint-plugin-install.py .githooks; then
     exit 0
 fi
 

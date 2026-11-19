@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "my-workflows",
+  "description": "Create and clean dev worktrees, ship changes to test, and generate test reports.",
+  "author": {
+    "name": "Curtis Liong",
+    "email": "lkangd@gmail.com"
+  },
+  "repository": "https://github.com/lkangd/skills"
+}

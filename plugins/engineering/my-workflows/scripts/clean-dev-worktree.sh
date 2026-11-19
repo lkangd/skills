@@ -6,8 +6,7 @@ BRANCH_NAME=""
 FORCE=0
 
 usage() {
-  echo "Usage: /my-workflows:clean-dev-worktree <branch-name> [--force]" >&2
-  echo "Example: /my-workflows:clean-dev-worktree dev-f-20260702-ai-live-stream-reply" >&2
+  echo "Usage: bash clean-dev-worktree.sh \"<branch-name> [--force]\"" >&2
 }
 
 print_error_status() {
@@ -346,8 +345,8 @@ fi
 if (( unsafe_count > 0 && FORCE == 0 )); then
   echo "STATUS: CONFIRMATION_REQUIRED"
   echo "No deletion was performed because at least one target is not safe to delete automatically."
-  echo "If you confirm the uncommitted files, missing worktrees, or unmerged local branches can be discarded, rerun:"
-  echo "/my-workflows:clean-dev-worktree ${BRANCH_NAME} --force"
+  echo "Confirm that the uncommitted files, missing worktrees, or unmerged local branches can be discarded before retrying with --force."
+  echo "Retry arguments: ${BRANCH_NAME} --force"
   exit 0
 fi
 

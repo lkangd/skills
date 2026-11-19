@@ -4,8 +4,7 @@ set -euo pipefail
 BRANCH_NAME="${1:-}"
 
 usage() {
-  echo "Usage: /create-dev-worktree <branch-name>" >&2
-  echo "Example: /create-dev-worktree dev-f-20260511-auto-aftermarket-for-standard" >&2
+  echo "Usage: bash create-dev-worktree.sh <branch-name>" >&2
 }
 
 fail() {

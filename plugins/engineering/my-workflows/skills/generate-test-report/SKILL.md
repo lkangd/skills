@@ -1,9 +1,10 @@
 ---
+name: generate-test-report
+disable-model-invocation: true
 description: Analyze a specified change scope and write an audience-focused test report
 argument-hint: <change scope> [--view=e2e|code-review|both] [--output=<path>]
 allowed-tools:
   - Bash(bash:*)
-  - Bash(printenv:*)
   - Bash(git status:*)
   - Bash(git diff:*)
   - Bash(git show:*)
@@ -20,20 +21,15 @@ allowed-tools:
   - AskUserQuestion
 ---
 
-## Plugin root
+Use the arguments supplied with the skill invocation.
 
-Resolve **PLUGIN_ROOT** with this Bash tool call (not load-time bang-backtick). `printenv`
-alone is not enough: later Bash calls do not receive `CLAUDE_PLUGIN_ROOT`.
+Claude Code plugin install path: `${CLAUDE_PLUGIN_ROOT}`.
 
-```bash
-bash -c 'r=$(printenv CLAUDE_PLUGIN_ROOT 2>/dev/null); [ -f "$r/references/test-report-template.md" ] || r=$(ls -td "$HOME"/.claude/plugins/cache/*/my-workflows/*/references/test-report-template.md 2>/dev/null | head -1); r=${r%/references/test-report-template.md}; printf "%s\n" "${r:-UNRESOLVED}"'
-```
+Read [Bundled files](../../references/bundled-files.md) to resolve the plugin root and project working directory.
 
-The printed path is **PLUGIN_ROOT**. Do not write `${CLAUDE_PLUGIN_ROOT}` into later Read or Bash tool calls. If the result is `UNRESOLVED`, stop and explain that the plugin installation could not be located.
+Claude Code arguments: `$ARGUMENTS`
 
 ## Request
-
-Raw arguments: `$ARGUMENTS`
 
 Analyze the requested Git change scope and write a test-submission report. The report language is Simplified Chinese by default; honor an explicitly requested language.
 
@@ -66,12 +62,12 @@ Treat view flags, output options, and language instructions as request controls,
 
 ### 1. Load the presentation guide
 
-Read `PLUGIN_ROOT/references/test-report-template.md` using the resolved absolute plugin path and follow it for perspective-specific content, adaptive sections, tables, and readability rules.
+Read [the test report template](../../references/test-report-template.md) using the resolved absolute plugin path and follow it for perspective-specific content, adaptive sections, tables, and readability rules.
 
 ### 2. Resolve the Git scope safely
 
 1. Confirm the current directory belongs to a Git repository and resolve its root with `git rev-parse`.
-2. Validate every revision with `git rev-parse --verify`. Never interpolate an unvalidated argument into a shell command.
+2. Validate every revision with `git rev-parse --verify --end-of-options`. Never interpolate an unvalidated argument into a shell command.
 3. Resolve and record the normalized scope, base revision, target revision or working-tree state, and commit list.
 4. For a branch comparison that means “changes introduced by this branch”, compare the merge base with the target branch and state both revisions.
 5. For a single commit, compare it with its first parent. If it is a root commit or merge commit, state the comparison rule used.
@@ -85,7 +81,7 @@ If the user explicitly supplies an output file or directory, use it after confir
 
 If no destination is supplied:
 
-1. Use Glob to discover Markdown files under the Git root.
+1. Use the host’s file discovery tools to find Markdown files under the Git root.
 2. Exclude dependency, generated, cache, build, coverage, VCS, and tool-internal trees such as `node_modules`, `vendor`, `dist`, `build`, `coverage`, `.git`, and plugin/cache directories.
 3. Group the remaining Markdown files by their direct parent directory and rank directories by file count. Do not count the repository root as an ancestor of every nested file.
 4. Inspect the highest-ranked directory's filenames and representative Markdown content.
@@ -115,7 +111,7 @@ Use repository evidence rather than commit messages alone:
 1. Follow the loaded presentation guide and include only the selected perspectives.
 2. Include sections only when they describe a real affected surface. Do not render “not applicable” placeholder sections.
 3. Prefer tables for comparisons, impact maps, review maps, and step-to-expectation mappings; use prose where a table would make the explanation harder to follow.
-4. Write the completed report to the resolved path with Write.
+4. Write the completed report to the resolved path with the host’s file-writing tool.
 5. Reply with the saved path, normalized change scope, selected perspective or perspectives, and a concise summary. Do not duplicate the full report in the response unless the user asks for inline output.
 
 ## Quality gate

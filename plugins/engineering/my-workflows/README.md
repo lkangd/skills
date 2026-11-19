@@ -1,17 +1,28 @@
 # My Workflows Plugin
 
-Personal engineering workflow commands.
+Manually invoked skills for development worktrees, test deployments, and test reports.
 
-## Commands
+## Install and invoke
 
-### `/create-dev-worktree <branch-name>`
+| Host | Install | Invoke |
+| --- | --- | --- |
+| Claude Code | `/plugin marketplace add lkangd/skills` then `/plugin install my-workflows@lkangd-skills` | `/my-workflows:<skill> <arguments>` |
+| Codex | `codex plugin marketplace add lkangd/skills` then `codex plugin add my-workflows@agent-skills-project` | `$my-workflows:<skill> <arguments>` |
+| Pi | `pi install git:github.com/lkangd/skills` | `/skill:<skill> <arguments>` |
+
+The examples below use Claude Code syntax. Use the same arguments in Codex and Pi.
+Claude Code also accepts `/<skill>` when the short name is available.
+
+## Skills
+
+### `/my-workflows:create-dev-worktree <branch-name>`
 
 Creates a sibling git worktree for the current repository, creates or updates a sibling VS Code `.code-workspace` file for the same branch, and creates or reuses a cmux workspace with that same branch name.
 
 Use this after creating a remote development branch in the company system.
 
 ```bash
-/create-dev-worktree dev-f-20260511-auto-aftermarket-for-standard
+/my-workflows:create-dev-worktree dev-f-20260511-auto-aftermarket-for-standard
 ```
 
 For a repository at:
@@ -179,7 +190,7 @@ Examples:
 
 ## Troubleshooting
 
-- If `/create-dev-worktree` cannot find the branch, create it in the company system and rerun after remote sync.
-- If `/create-dev-worktree` finds the target path but it is not a git worktree, rename or remove that directory before rerunning.
-- If `/clean-dev-worktree` reports `CONFIRMATION_REQUIRED`, review the table before rerunning with `--force`.
+- If `create-dev-worktree` cannot find the branch, create it in the company system and rerun after remote sync.
+- If `create-dev-worktree` finds a target path that belongs to another directory, rename or remove that directory before rerunning.
+- If `clean-dev-worktree` reports `CONFIRMATION_REQUIRED`, review the table before rerunning with `--force`.
 - If the `.code-workspace` file contains invalid JSON, fix the JSON manually before rerunning either command.
