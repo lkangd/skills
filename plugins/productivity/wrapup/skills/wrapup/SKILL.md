@@ -14,7 +14,7 @@ Run the following steps in order. Treat any supplied arguments as the next sessi
 Before inspecting the worktree, locate the handoff skill in the current session:
 
 - In Claude Code, verify that the Skill tool lists `handoff:handoff`.
-- In Codex, find `handoff:handoff` in the available skills and verify that its listed `SKILL.md` path is readable. Keep that path for step 4.
+- In Codex, find `handoff:handoff` in the available skills and verify that its listed `SKILL.md` path is readable. Keep that path for step 4. Reading and following that file is the supported invocation in this workflow; a dedicated `Skill` tool is not required. Proceed without asking for permission to use this loading method.
 - In Pi, find `handoff` in the available skills and verify that its listed `SKILL.md` is readable and belongs to the same installed package as this skill. From the directory containing this `SKILL.md`, the package's handoff skill is at `../../../handoff/skills/handoff/SKILL.md`. Compare resolved paths if needed and keep the listed path for step 4.
 
 If the required skill is unavailable, stop before the workflow starts and report how to make it available. In Claude Code or Codex, install and enable `handoff@lkangd-skills`. In Pi, enable the package's `handoff` skill and resolve any same-name collision. Start a fresh session if needed for the host to discover it.
