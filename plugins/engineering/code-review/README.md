@@ -9,20 +9,22 @@ confirmed major or critical finding, up to the configured round cap.
 ## Install
 
 The local workflows require Git, Bash, jq and Python 3.9 or newer. Each host uses its
-own CLI and authentication. The installed workflows were verified on Codex 0.166.0
-and Pi 1.5.2. Pi Git installation also uses its configured package manager.
+own CLI and authentication. Pi Git installation also uses its configured package manager.
 
 | Host | Install | Invoke |
 |---|---|---|
-| Claude Code | `/plugin marketplace add lkangd/skills` then `/plugin install code-review@lkangd-skills` | `/code-review <target>`, `/code-review:adversarial <target>`, `/code-review:setup` |
-| Codex | `codex plugin marketplace add lkangd/skills` then `codex plugin add code-review@lkangd-skills` | `$code-review:code-review <target>`, or pass `adversarial <target>`, `resume [<run-dir>]` or `setup` to the same skill |
+| Claude Code | `/plugin marketplace add lkangd/skills` then `/plugin install code-review@lkangd-skills` | `/code-review:code-review <target>`, `/code-review:adversarial <target>`, `/code-review:setup` |
+| Codex | `codex plugin marketplace add lkangd/skills` then `codex plugin add code-review@lkangd-skills` | `$code-review:code-review <target>`, `$code-review:adversarial <target>`, `$code-review:setup` |
 | Pi | `pi install git:github.com/lkangd/skills` | `/code-review <target>`, `/code-review:adversarial <target>`, `/code-review:setup` |
 
 For local development, run `codex plugin marketplace add .` or `pi install .` from
 the root of the checkout. Start a new host session in the project
-after installation. The Codex entry uses the bundled local MCP launcher. Approve the
-displayed repository when it prompts on first use. Each command launches one independent
-scheduler per round. The invoking session waits for its final result before acting on findings.
+after installation. All three hosts load the same manual skills and launch one scheduler
+per round through their shell tool. The invoking session waits for the final result before
+acting on findings. Claude Code also accepts the short `/code-review` name for the
+plugin skill when that name is free. Claude Code 2.1.311 assigns it to the bundled
+review even with the previous plugin version installed. In Codex, the main skill also
+accepts the existing `adversarial <target>` and `setup` arguments.
 
 ## Review and resume
 
@@ -33,12 +35,12 @@ already in the conversation. Use `-c=N` for a per-run concurrency override and
 `--max-rounds=N` in adversarial mode.
 
 A run writes its plan, task receipts and final `out/findings.json` under
-`.code-review/runs/`. Use the host's stop control to interrupt a round. Resume via
-`/code-review resume [<run-dir>]` in Claude Code or
-Pi, or the Codex skill's `resume` argument. A portable run resumes with its original
+`.code-review/runs/`. Use the host's stop control to interrupt a round. Resume with `/code-review:code-review resume [<run-dir>]` in Claude Code,
+`$code-review:code-review resume [<run-dir>]` in Codex, or
+`/code-review resume [<run-dir>]` in Pi. A portable run resumes with its original
 runner, even when another host initiates recovery. The runner must be available and
-authenticated. Older Claude checkpoints without a parent run record use the Claude
-command. Provide the original runner when asked.
+authenticated. Older Claude checkpoints without a parent run record use the bundled legacy launcher.
+Provide the original runner when asked.
 
 The shared scheduler saves each valid receipt when its task finishes. A completed
 empty receipt counts as work done. A round with failed tasks stays incomplete after
@@ -73,10 +75,7 @@ plugin directory. The CLI produces a review report for the invoking agent to act
 ## Verification
 
 Run `python3 -B evaluation/installed_workflows.py` from the plugin directory.
-It installs both entry points in isolated homes and exercises normal review, the
-adversarial fix and re-review loop, and interruption with checkpoint reuse. The
-suite uses deterministic test models. Run the existing Bash suites for Claude
-launcher and receipt compatibility.
-
-Use `python3 -B evaluation/installed_workflows.py codex --long-wait` to test a single
-installed MCP call that stays open for over five minutes.
+It checks the skills from isolated Claude Code, Codex, and Pi installs and exercises
+the shared CLI through normal review, adversarial re-review, and interruption with
+checkpoint reuse. The suite uses deterministic workers. Run the existing Bash suites
+for Claude launcher and receipt compatibility.

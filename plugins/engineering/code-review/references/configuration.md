@@ -30,8 +30,8 @@ The template includes every required field.
   "max_rounds": 3,
   "backlog_dir": "docs/code-review-backlog",
   "claude": { "runner": "claude" },
-  "codex": {},
-  "pi": {}
+  "codex": { "runner": "codex" },
+  "pi": { "runner": "pi" }
 }
 ```
 

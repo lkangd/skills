@@ -1,19 +1,14 @@
 # Code Review Core Workflow
 
-Shared procedure for `/code-review` (single pass) and `/code-review:adversarial` (loop).
-The command that sent you here tells you which mode you are in. Follow the steps in order.
+The review skill selects normal or adversarial mode. See the [host entry points](../README.md#install).
+Follow the steps in order.
 
 Throughout this document, **review target** (审查内容) means whatever the user asked to review:
 one or more commits, staged changes, the working tree, specific files, or a branch diff.
 Never assume it is a pull request.
 
-`PLUGIN_ROOT` below is the absolute plugin path the invoking command resolved and printed for
-you. Substitute that literal path every time it appears — in Bash commands and in Read paths
-alike. Never write `${CLAUDE_PLUGIN_ROOT}` into a tool call: that variable is not exported into
-the Bash tool's shell, so it expands to an empty string and the call dies with exit 127 before
-anything runs. If the command did not give you a path, resolve it yourself with
-`bash -c 'ls -td "$HOME"/.claude/plugins/cache/*/code-review/*/scripts/run-orchestrator.sh | head -1'`
-and take the directory two levels above the script.
+Use the absolute path to the installed plugin as `PLUGIN_ROOT` when opening references
+and invoking scripts.
 
 ## Division of labor
 
@@ -113,12 +108,12 @@ never fabricate a spec, and never block the review on one.
    `<base>...HEAD`.
    Angle lists — round 1 always dispatches the full 5-angle set (3 bug-hunting + the merged
    `cleanup` angle covering reuse/simplification/altitude/efficiency + conventions):
-   `/code-review` round 1:
+   Normal mode, round 1:
    `correctness, removed-behavior, callers, cleanup, conventions`;
    (the launcher drops `conventions` by itself when the repo has no convention documents —
    nothing to cite — and says so in its stderr and the orchestrator prompt; report it as
    skipped, not reviewed);
-   `/code-review:adversarial` round 1: those plus `design, pitfalls, wrapper` (the presence
+   Adversarial mode, round 1: those plus `design, pitfalls, wrapper` (the presence
    of `design` also makes the orchestrator run a post-verification gap sweep); when §2.5
    resolved spec sources, append `spec` to the round-1 list and pass one `--spec-file` per
    document; any round 2+: `re-review` only — still pass the same `--spec-file` flags so the

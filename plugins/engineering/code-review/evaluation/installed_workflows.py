@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise installed Codex and Pi entry points with reproducible local model doubles."""
+"""Check installed manual skills and exercise their scheduler with deterministic workers."""
 
 import argparse
 import json
@@ -14,6 +14,7 @@ from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parents[1]
 REPOSITORY = PLUGIN.parents[2]
+EXTERNAL_RUNNER = "ccsp -g fixture claude"
 
 FAKE_CODEX = r'''#!/usr/bin/env python3
 import json, os, sys, time
@@ -136,12 +137,13 @@ def receipt(prompt, wrapped=False):
                      "suggestion":"Return n + 1."})
     return {"status":"completed", "findings":data}
 '''
-# The installed Pi extension runs its normal model tool path. This provider supplies
-# predictable parent turns without using network or credentials.
+# Drive the installed skills through Pi’s ordinary Bash tool without calling a model API.
 PI_DRIVER = r'''
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+
+const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 export default function (pi) {
   let cwd;
@@ -158,28 +160,45 @@ export default function (pi) {
       const message = users.at(-1);
       const instruction = typeof message.content === "string" ? message.content
         : message.content.filter((item) => item.type === "text").map((item) => item.text).join("");
-      const mode = instruction.match(/in (\w+) mode/)[1];
-      const input = JSON.parse(instruction.match(/^Command arguments: (.*)\.$/m)[1]);
+      const source = instruction.match(/^Follow the manually invoked skill from (.+)\.$/m);
+      if (!source || !instruction.includes("../../references/portable-workflow.md")) {
+        throw new Error("Expected installed skill content: " + instruction);
+      }
+      const skillDir = dirname(JSON.parse(source[1]));
+      const skill = basename(skillDir);
+      const target = JSON.parse(instruction.match(/^Invocation arguments: (".*")$/m)[1]);
+      const entry = resolve(skillDir, "../../scripts/review.py");
       const last = context.messages.at(-1);
-      let request;
+      let args;
       if (last.role === "user") {
         results = [];
-        request = mode === "resume" ? {operation: "resume", run_dir: input}
-          : {operation: "run", kind: "working-tree"};
+        if (skill === "setup") {
+          args = ["config-template"];
+        } else if (target.startsWith("resume ")) {
+          args = ["resume", "--", target.slice("resume ".length)];
+        } else {
+          const mode = skill === "adversarial" ? "adversarial" : "normal";
+          if (!instruction.includes("Pi session model for review runner selection: fixture/review")) {
+            throw new Error("Missing Pi model context");
+          }
+          args = ["run", "--backend", "pi", "--mode", mode, "--active-model=fixture/review", "--", target];
+        }
       } else {
-        const report = JSON.parse(last.content.find((item) => item.type === "text").text);
+        const text = last.content.find((item) => item.type === "text").text;
+        const report = JSON.parse(text.split("\n").find((line) => line.startsWith("{")));
         results.push(report);
-        if (mode === "adversarial" && results.length === 1 && report.status === "completed") {
+        if (skill === "adversarial" && results.length === 1 && report.status === "completed") {
           writeFileSync(join(cwd, "math.py"), "def increment(n):\n    return n + 1\n");
-          request = {operation: "next", run_dir: report.run_dir,
-            fixed: [1], known_issues: "- [fixed] math.py: Wrong arithmetic"};
+          args = ["next", "--fixed=1", "--known-issues=- [fixed] math.py: Wrong arithmetic",
+            "--", report.run_dir];
         }
       }
+      const request = args && ["python3", "-B", entry, "--repo", cwd, ...args].map(quote).join(" ");
       const final = {
         role: "assistant", api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), stopReason: request ? "toolUse" : "stop",
         content: request ? [{ type: "toolCall", id: "task-" + results.length,
-          name: "code_review_round", arguments: request }] : [{ type: "text", text: "Done" }],
+          name: "bash", arguments: {command: request} }] : [{ type: "text", text: "Done" }],
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
@@ -219,15 +238,15 @@ def reset(repo):
     (repo / "math.py").write_text("def increment(n):\n    return n - 1\n")
 
 
-def configure(repo, external=False):
-    argv = [sys.executable, "-B", str(PLUGIN / "scripts/review.py"), "--repo", str(repo)]
+def configure(repo, external=False, plugin=PLUGIN):
+    argv = [sys.executable, "-B", str(plugin / "scripts/review.py"), "--repo", str(repo)]
     proposal = command([*argv, "config-template"], repo)
     config = repo / ".code-review/config.local.json"
     assert not config.exists()
     if external:
         settings = json.loads(proposal)
         for host in ("claude", "codex", "pi"):
-            settings[host]["runner"] = "ccsp -g fixture claude"
+            settings[host]["runner"] = EXTERNAL_RUNNER
         proposal = json.dumps(settings)
     partial = subprocess.run([*argv, "config-save"], cwd=repo, input="{}",
                              capture_output=True, text=True)
@@ -289,7 +308,6 @@ class Codex:
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
         self.repo = repo
         self.seq = 0
-        self.authorized = False
 
     def send(self, body):
         self.process.stdin.write(json.dumps(body).encode() + b"\n")
@@ -306,49 +324,33 @@ class Codex:
             if not raw:
                 break
             item = json.loads(raw)
-            if item.get("method") == "mcpServer/elicitation/request":
-                assert str(self.repo) in item["params"]["message"], item
-                self.authorized = True
-                self.send({"jsonrpc": "2.0", "id": item["id"], "result": {
-                    "action": "accept", "content": {"authorize": True}}})
-            elif item.get("id") == self.seq and "method" not in item:
+            if item.get("id") == self.seq and "method" not in item:
                 assert "error" not in item, item
                 return item["result"]
         raise AssertionError(f"No Codex response for {method}")
 
     def __enter__(self):
+        return self
+
+    def skills(self):
         self.call("initialize", {"clientInfo": {"name": "code-review-test", "version": "1"}})
         self.send({"jsonrpc": "2.0", "method": "initialized"})
-        self.thread = self.call("thread/start", {"cwd": str(self.repo), "sandbox": "read-only",
-                                               "approvalPolicy": "on-request"})["thread"]["id"]
-        status = self.call("mcpServerStatus/list", {"threadId": self.thread})
-        server = next(entry for entry in status["data"] if "code-review" in entry["name"])
-        assert set(server["tools"]) == {"review_run", "review_resume", "review_next"}, server
-        self.server = server["name"]
-        skills = self.call("skills/list", {"cwds": [str(self.repo)]})
-        assert any(skill["name"] == "code-review:code-review"
-                   for entry in skills["data"] for skill in entry["skills"]), skills
-        return self
+        return self.call("skills/list", {"cwds": [str(self.repo)]})["data"][0]["skills"]
 
     def __exit__(self, *_):
         self.selector.close()
         self.process.terminate()
         self.process.communicate(timeout=10)
 
-    def tool(self, name, timeout=45, **args):
-        response = self.call("mcpServer/tool/call", {
-            "threadId": self.thread, "server": self.server, "tool": name,
-            "arguments": {"workspace": str(self.repo), **args},
-        }, timeout=timeout)
-        return json.loads(response["content"][0]["text"])
 
-
-def assert_complete(result, expected_round=1, count=1):
+def assert_complete(result, expected_round=1, count=1, *, external=False):
     if result["status"] != "completed":
         logs = Path(result["run_dir"]) / "out" if result.get("run_dir") else None
         errors = {path.name: path.read_text() for path in logs.glob("*.err")} if logs else {}
         raise AssertionError((result, errors))
     assert result["round"] == expected_round, result
+    if external:
+        assert result["runner"] == EXTERNAL_RUNNER and result["harness"] == "claude", result
     findings = json.loads(Path(result["findings"]).read_text())
     assert len(findings) == count, findings
     if findings:
@@ -365,86 +367,102 @@ def wait_checkpoint(repo, known=()):
     raise AssertionError("The first review task did not checkpoint")
 
 
-def interrupt_codex_launcher(installed, repo, env):
-    launcher = installed / "scripts/review_mcp.py"
-    proc = subprocess.Popen([sys.executable, "-B", str(launcher)], cwd=installed, env=env,
-                            bufsize=0, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL)
-    def send(body):
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0", **body}).encode() + b"\n")
+SKILLS = {"code-review", "adversarial", "setup"}
+QUALIFIED = {f"code-review:{name}" for name in SKILLS}
+
+
+def install_claude(cli, source, repo, root):
+    home = root / "claude-home"
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(home),
+           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+           "ANTHROPIC_API_KEY": "fixture", "ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}
+    command([cli, "plugin", "install", "code-review", "--marketplace", str(source)], root, env)
+    initialize = {"type": "control_request", "request_id": "skills",
+                  "request": {"subtype": "initialize"}}
+    probe = subprocess.run([cli, "-p", "--input-format", "stream-json", "--output-format",
+                            "stream-json", "--verbose"], cwd=repo, env=env,
+                           input=json.dumps(initialize) + "\n", text=True, capture_output=True,
+                           timeout=20, check=True)
+    responses = [json.loads(line) for line in probe.stdout.splitlines()]
+    inventory = next(item["response"]["response"] for item in responses
+                     if item.get("type") == "control_response")["commands"]
+    assert {entry["name"] for entry in inventory if entry["name"].startswith("code-review:")} == QUALIFIED
+    manifest = json.loads((home / "plugins/installed_plugins.json").read_text())
+    return Path(manifest["plugins"]["code-review@lkangd-skills"][0]["installPath"])
+
+
+def install_codex(cli, source, repo, root):
+    env = {**os.environ, "CODEX_HOME": str(root / "codex-home")}
+    (root / "codex-home").mkdir()
+    command([cli, "plugin", "marketplace", "add", str(source)], root, env)
+    installed = json.loads(command([cli, "plugin", "add", "code-review@lkangd-skills", "--json"],
+                                   root, env))
+    plugin = Path(installed["installedPath"]).resolve()
+    with Codex(cli, repo, env) as codex:
+        skills = {skill["name"]: skill for skill in codex.skills()
+                  if skill["name"].startswith("code-review:")}
+        assert skills.keys() == QUALIFIED, skills
+        for name, skill in skills.items():
+            assert Path(skill["path"]).resolve() == plugin / "skills" / name.split(":")[1] / "SKILL.md"
+            assert "allow_implicit_invocation: false" in (
+                Path(skill["path"]).parent / "agents/openai.yaml"
+            ).read_text()
+    return plugin
+
+
+def exercise_scheduler(plugin, host, repo, env, external):
+    entry = [sys.executable, "-B", str(plugin / "scripts/review.py"), "--repo", str(repo)]
+    launch = [*entry, "run", "--backend", host]
+
+    def invoke(*argv, error=None):
+        result = subprocess.run(argv, cwd=repo, env=env, capture_output=True, text=True, timeout=45)
+        report = json.loads(result.stdout)
+        if error:
+            assert result.returncode and error in report["error"], report
+        else:
+            assert result.returncode == 0, (report, result.stderr)
+        return report
+
+    invoke(*launch, "working-tree", error="Missing .code-review/")
+    config = repo / ".code-review/config.local.json"
+    config.parent.mkdir()
+    config.write_text("{}")
+    invoke(*launch, "working-tree", error="Incomplete .code-review/")
+    config.unlink()
+    assert not Path(env["REVIEW_FIXTURE_LOG"]).exists()
+    configure(repo, external, plugin)
+    assert_complete(invoke(*launch, "working-tree"), external=external)
+    first = invoke(*launch, "--mode", "adversarial", "working-tree")
+    assert_complete(first, external=external)
+    assert (Path(first["run_dir"]) / "out/candidates-sweep.json").exists()
+    (repo / "math.py").write_text("def increment(n):\n    return n + 1\n")
+    assert_complete(invoke(*entry, "next", "--fixed=1", "--known-issues=- [fixed] Wrong arithmetic",
+                           "--", first["run_dir"]), 2, 0, external=external)
+    reset(repo)
 
     known = set((repo / ".code-review/runs").glob("*/round-1/out/candidates-correctness.json"))
-    (repo / "pause-review").touch()
-    try:
-        with selectors.DefaultSelector() as selector:
-            selector.register(proc.stdout, selectors.EVENT_READ)
-            send({"id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}})
-            assert selector.select(5) and json.loads(proc.stdout.readline())["id"] == 1
-            send({"id": 2, "method": "tools/call", "params": {"name": "review_run", "arguments": {
-                "workspace": str(repo), "kind": "working-tree", "concurrency": 2}}})
+    pause = repo / "pause-review"
+    pause.touch()
+    with subprocess.Popen([*launch, "--concurrency=2", "working-tree"], cwd=repo, env=env,
+                          text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        try:
             run = wait_checkpoint(repo, known)
-            assert not selector.select(0), "Review returned before the round finished"
-            send({"method": "notifications/cancelled", "params": {"requestId": 2}})
-            # An idle tools/list reply proves the launcher has stopped and joined its runner.
-            send({"id": 3, "method": "tools/list"})
-            assert selector.select(10) and json.loads(proc.stdout.readline())["id"] == 3
-            assert not (run / "out/findings.json").exists(), run
-            return run
-    finally:
-        proc.terminate()
-        proc.communicate(timeout=10)
-        (repo / "pause-review").unlink()
-
-
-def exercise_codex(cli, source, repo, env, root, long_wait, external):
-    setup_env = {**os.environ, "CODEX_HOME": str(root / "codex-home")}
-    (root / "codex-home").mkdir()
-    command([cli, "plugin", "marketplace", "add", str(source)], root, setup_env)
-    installed = json.loads(command([cli, "plugin", "add", "code-review@lkangd-skills", "--json"],
-                                   root, setup_env))
-    plugin_root = Path(installed["installedPath"])
-    assert (plugin_root / "skills/code-review/SKILL.md").is_file(), installed
-    env = {**env, "CODEX_HOME": setup_env["CODEX_HOME"]}
-    with Codex(cli, repo, env) as codex:
-        missing = codex.tool("review_run", kind="working-tree")
-        assert missing["status"] == "error" and "Missing .code-review/" in missing["error"], missing
-        config = repo / ".code-review/config.local.json"
-        config.parent.mkdir()
-        config.write_text("{}")
-        partial = codex.tool("review_run", kind="working-tree")
-        assert partial["status"] == "error" and "Incomplete .code-review/" in partial["error"], partial
-        config.unlink()
-        assert not codex.authorized and not Path(env["REVIEW_FIXTURE_LOG"]).exists()
-        configure(repo, external)
-        ordinary = codex.tool("review_run", kind="working-tree")
-        assert_complete(ordinary)
-        if external:
-            assert ordinary["runner"] == "ccsp -g fixture claude"
-        assert codex.authorized
-        first = codex.tool("review_run", kind="working-tree", mode="adversarial")
-        assert_complete(first)
-        assert (Path(first["run_dir"]) / "out/candidates-sweep.json").exists()
-        (repo / "math.py").write_text("def increment(n):\n    return n + 1\n")
-        assert_complete(codex.tool("review_next", run_dir=first["run_dir"],
-                                   fixed=[1], known_issues="- [fixed] math.py"), 2, 0)
-        reset(repo)
-        run = interrupt_codex_launcher(plugin_root, repo, env)
-        assert str(run) in codex.tool("review_resume")["run_dirs"]
-        log = Path(env["REVIEW_FIXTURE_LOG"])
-        seen = log.read_text().splitlines().count("correctness")
-        assert_complete(codex.tool("review_resume", run_dir=str(run)))
-        assert log.read_text().splitlines().count("correctness") == seen
-        if not external and not long_wait:
-            exercise_cross_harness(repo, env)
-        print("Codex installed: configuration required, normal, adversarial + re-review, interrupted + resumed",
-              flush=True)
-        if long_wait:
-            (repo / "pause-review").write_text("305")
-            start = time.monotonic()
-            assert_complete(codex.tool("review_run", timeout=360, kind="working-tree"))
-            elapsed = time.monotonic() - start
-            assert elapsed > 300, elapsed
-            print(f"Codex installed: one call returned its final result after {elapsed:.1f}s", flush=True)
+            assert process.poll() is None
+            process.terminate()
+            output, errors = process.communicate(timeout=20)
+            assert json.loads(output)["status"] == "incomplete", (output, errors)
+            assert not (run / "out/findings.json").exists()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+            pause.unlink()
+    assert str(run) in invoke(*entry, "resume")["run_dirs"]
+    log = Path(env["REVIEW_FIXTURE_LOG"])
+    seen = log.read_text().splitlines().count("correctness")
+    assert_complete(invoke(*entry, "resume", "--", str(run)), external=external)
+    assert log.read_text().splitlines().count("correctness") == seen
+    print(f"{host.capitalize()}: installed manual entries and scheduler review, re-review and resume")
 
 
 def exercise_pi(cli, source, repo, env, root, external):
@@ -483,12 +501,11 @@ def exercise_pi(cli, source, repo, env, root, external):
                         break
                     event = json.loads(raw)
                     logs.append(event)
-                    assert not (event.get("type") == "tool_execution_update"
-                                and event.get("toolName") == "code_review_round"), event
-                    if event.get("type") == "tool_execution_end" and event.get("toolName") == "code_review_round":
-                        result = event.get("result", {})
-                        if result.get("details"):
-                            results.append(result["details"])
+                    if event.get("type") == "tool_execution_end" and event.get("toolName") == "bash":
+                        for part in event.get("result", {}).get("content", []):
+                            for line in part.get("text", "").splitlines():
+                                if line.startswith("{"):
+                                    results.append(json.loads(line))
                     if event.get("type") == "agent_end":
                         if results:
                             return results
@@ -498,18 +515,17 @@ def exercise_pi(cli, source, repo, env, root, external):
             proc.terminate()
             stdout, stderr = proc.communicate(timeout=10)
         raise AssertionError(f"Pi did not finish {text}\n{logs[-12:]}\n{stdout.decode()}\n{stderr.decode()}")
+    assert invoke("/code-review:setup")[0]["concurrency"] == 4
     missing = invoke("/code-review working-tree")[0]
     assert missing["status"] == "error" and "Missing .code-review/" in missing["error"], missing
     assert not Path(env["REVIEW_FIXTURE_LOG"]).exists()
     configure(repo, external)
     ordinary = invoke("/code-review working-tree")[0]
-    assert_complete(ordinary)
-    if external:
-        assert ordinary["runner"] == "ccsp -g fixture claude"
+    assert_complete(ordinary, external=external)
     first, second = invoke("/code-review:adversarial working-tree")
-    assert_complete(first)
+    assert_complete(first, external=external)
     assert (Path(first["run_dir"]) / "out/candidates-sweep.json").exists()
-    assert_complete(second, 2, 0)
+    assert_complete(second, 2, 0, external=external)
     reset(repo)
     (repo / "pause-review").touch()
     interrupted = invoke("/code-review working-tree", interrupt=True)[0]
@@ -519,32 +535,35 @@ def exercise_pi(cli, source, repo, env, root, external):
     (repo / "pause-review").unlink()
     log = Path(env["REVIEW_FIXTURE_LOG"])
     seen = log.read_text().splitlines().count("correctness")
-    assert_complete(invoke(f"/code-review resume {run}")[0])
+    assert_complete(invoke(f"/code-review resume {run}")[0], external=external)
     assert log.read_text().splitlines().count("correctness") == seen
     print("Pi Git-installed: configuration required, normal, adversarial + re-review, interrupted + resumed")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("host", choices=("codex", "pi", "both"), default="both", nargs="?")
-    parser.add_argument("--long-wait", action="store_true", help="verify one Codex tool call lasting over 300s")
-    parser.add_argument("--external", action="store_true", help="use the shared external runner on both hosts")
+    parser.add_argument("host", choices=("claude", "codex", "pi", "all", "both"), default="all", nargs="?")
+    parser.add_argument("--external", action="store_true", help="use a Claude-compatible runner on every host")
     args = parser.parse_args()
-    hosts = ("codex", "pi") if args.host == "both" else (args.host,)
+    hosts = {"all": ("claude", "codex", "pi"), "both": ("codex", "pi")}.get(args.host, (args.host,))
     for host in hosts:
         cli = shutil.which(host)
         assert cli, f"{host} is required"
         with tempfile.TemporaryDirectory(prefix=f"installed-review-{host}-") as temp:
             root = Path(temp).resolve()
-            if host == "codex":
-                exercise_codex(cli, installed_source(root), fixture(root), environment(root), root,
-                               args.long_wait, args.external)
+            source, repo, env = installed_source(root), fixture(root), environment(root)
+            external = args.external or host == "claude"
+            if host == "pi":
+                exercise_pi(cli, source, repo, env, root, external)
             else:
-                exercise_pi(cli, installed_source(root), fixture(root), environment(root), root, args.external)
-            if args.external:
+                install = install_claude if host == "claude" else install_codex
+                plugin = install(cli, source, repo, root)
+                exercise_scheduler(plugin, host, repo, env, external)
+                if host == "codex":
+                    exercise_cross_harness(repo, env)
+            if external:
                 log = (root / "runners.log").read_text().splitlines()
                 assert log.count("launch") == 4 and log.count("resume") == 1, log
-                print(f"{host}: external orchestrator launched once per round and resumed once")
 
 
 if __name__ == "__main__":

@@ -1,14 +1,31 @@
 ---
 name: code-review
-description: Review an explicit Git change, verify findings, fix confirmed issues, or resume a review.
+description: Review a target (commits, staged, working tree, files), verify findings, fix confirmed issues
+argument-hint: <review-target> [-c=N] [--spec=<path>,...] | resume [<run-dir>]
 disable-model-invocation: true
+allowed-tools:
+  - Bash(bash:*)
+  - Bash(git diff:*)
+  - Bash(git show:*)
+  - Bash(git log:*)
+  - Bash(git status:*)
+  - Bash(mkdir:*)
+  - Bash(python3:*)
+  - Bash(printenv:*)
+  - Bash(test:*)
+  - Read
+  - Grep
+  - Glob
+  - AskUserQuestion
 ---
 
-Follow `../../references/portable-workflow.md` relative to this skill. Use the Git root as
-`workspace` in the bundled `review_*` MCP calls. Each review round is one blocking call.
-After dispatch, yield until that call returns. If the launcher is unavailable, report the
-blocker and stop. The launcher requests repository authorization on first use.
+Claude Code plugin install path (substituted when this skill loads): `${CLAUDE_PLUGIN_ROOT}`.
 
-Arguments are the target and optional `--spec=<path>[,<path>…]` and `-c=N`. Leading
-`adversarial` selects the iterative workflow and accepts `--max-rounds=N`. Leading
-`resume [<run-dir>]` selects recovery. Leading `setup` opens the configuration procedure.
+Invocation arguments: `$ARGUMENTS`. If the placeholder is literal, use the text supplied
+with the skill invocation.
+
+Use normal mode by default. Select resume mode when the first word is `resume` and use
+the optional run directory that follows. In Codex, also accept the existing leading
+`adversarial` and `setup` arguments as mode selectors.
+
+Follow [the shared workflow](../../references/portable-workflow.md) in the selected mode.
