@@ -114,8 +114,8 @@ payload_from_event() {
     | ($text | split("\n")
        | reduce .[] as $line ({inside: false, done: false, lines: []};
            if .done then .
-           elif (.inside | not) and ($line | test("^```json[[:space:]]*$")) then .inside = true
-           elif .inside and ($line | test("^```[[:space:]]*$")) then .inside = false | .done = true
+           elif (.inside | not) and ($line | test("^[[:blank:]]*```json[[:space:]]*$")) then .inside = true
+           elif .inside and ($line | test("^[[:blank:]]*```[[:space:]]*$")) then .inside = false | .done = true
            elif .inside then .lines += [$line]
            else . end)) as $fenced
     | if $fenced.done then ($fenced.lines | join("\n") | fromjson?)
@@ -190,7 +190,7 @@ $(printf '%s\n' "$line" | jq -c '
   # Foreground subagent: the receipt is the tool_result body.
   (select((.message.content? | type) == "array")
    | .message.content[]
-   | select(.type == "tool_result")
+   | select(.type == "tool_result" and .is_error != true)
    | {tool_id: .tool_use_id, text: (.content | text_content)}),
   # Background subagent (Claude Code runs Agent calls async by default since 2026-W27; the
   # launcher forces foreground, but a model that backgrounds anyway must still checkpoint):

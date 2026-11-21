@@ -65,9 +65,10 @@ CODE_REVIEW_TRANSCRIPT_ROOT="$TRANSCRIPT_ROOT" \
     --session-id "$SESSION_ID" --run-dir "$RUN_DIR" &
 HARVESTER_PID=$!
 
-jq -cn --arg text '```json
-{"status":"completed","findings":[]}
-```
+jq -cn --arg text '[Subagent hand-back] The report follows:
+  ```json
+  {"status":"completed","findings":[]}
+  ```
 <usage>done</usage>' '{
   type: "user",
   message: {content: [{type: "tool_result", tool_use_id: "call-review",
@@ -83,8 +84,8 @@ jq -cn --arg text '
 }' >> "$TRANSCRIPT"
 jq -cn '{
   type: "user",
-  message: {content: [{type: "tool_result", tool_use_id: "call-failed",
-                       content: "Agent terminated early due to an API error"}]}
+  message: {content: [{type: "tool_result", tool_use_id: "call-failed", is_error: true,
+                       content: "{\"status\":\"completed\",\"findings\":[]}"}]}
 }' >> "$TRANSCRIPT"
 # A backgrounded dispatch: the tool_result carries no receipt, the later notification does.
 jq -cn '{
