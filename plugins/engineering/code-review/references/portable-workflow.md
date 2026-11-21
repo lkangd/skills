@@ -16,9 +16,12 @@ round, including planning, reviewer dispatch, verification, and checkpoints.
    the conversation. Wait for an answer when target, resume selection, or configuration
    needs one.
 3. For a new review, resolve an explicit target. Ask when it is missing or ambiguous.
-   Use `working-tree` or `staged` with no values, `files` with repo-relative paths,
-   `commit` with one SHA or both endpoints of an inclusive range, or `branch` with its
-   base ref. Include intended behavior stated by the user in the description. Pass the
+   Use `staged` for the index, `files` with repo-relative paths, `commit` with one SHA
+   or both endpoints of an inclusive range, or `branch <base>` for committed changes
+   since the merge base. For cumulative changes including local edits and untracked
+   files, use `working-tree <baseline-commit>`. Use the supplied baseline, or resolve
+   the merge base when the user asks for branch changes plus local work. Plain
+   `working-tree` compares with HEAD. Include intended behavior in the description. Pass the
    spec paths from `--spec=<path>[,<path>…]` or the conversation and pass requirements
    present only in the conversation as spec context. If neither source exists, ask once
    with no spec as the default.
@@ -49,7 +52,9 @@ round, including planning, reviewer dispatch, verification, and checkpoints.
    timeout unset. While a round is running, wait for its result before doing other
    work or launching again. For an incomplete result, give the error and the resume
    invocation with the returned round path. For a launch error, report the blocker.
-7. For a completed round, open the returned findings file. Use
+7. For a completed round, open the returned findings file. If the user requested
+   review only, verify and report findings without applying fixes or writing backlog
+   entries. For a review-and-fix request or the default workflow, use
    [the review core](review-core.md#5-verify-findings-and-act) to verify each finding
    against current code, consolidate duplicates, fix in-scope issues, backlog
    out-of-scope issues, and account for every disposition. Check stale and

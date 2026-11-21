@@ -152,7 +152,9 @@ def commit(repo, ref):
 
 
 def target(repo, kind, values):
-    if kind in ("staged", "working-tree") and not values:
+    if kind == "working-tree" and len(values) <= 1:
+        return {"kind": kind, "refs": [commit(repo, values[0] if values else "HEAD")], "paths": []}
+    if kind == "staged" and not values:
         return {"kind": kind, "refs": [commit(repo, "HEAD")], "paths": []}
     if kind == "files" and values:
         paths = []

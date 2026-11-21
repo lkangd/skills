@@ -29,7 +29,9 @@ accepts the existing `adversarial <target>` and `setup` arguments.
 ## Review and resume
 
 Targets are explicit. Use a commit SHA, inclusive commit range, `staged`,
-`working-tree`, file paths, or `branch <base>`. Provide requirements with
+`working-tree`, file paths, or `branch <base>`. Use `working-tree <baseline-commit>`
+to review the cumulative tracked diff from that commit plus current untracked files.
+Provide requirements with
 `--spec=<path>[,<path>…]`. The invoking session can also use relevant requirements
 already in the conversation. Use `-c=N` for a per-run concurrency override and
 `--max-rounds=N` in adversarial mode.
