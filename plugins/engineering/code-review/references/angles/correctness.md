@@ -9,10 +9,10 @@ Review packet (target, changed files, known issues, spec, full diff): `{{PACKET_
 
 ## Your angle
 
-Read every hunk in the diff, line by line. Then read the enclosing function of each hunk in
-the repo — bugs on unchanged lines of a touched function are in scope: the change re-exposes
-them or fails to fix them. For every line ask: what input, state, timing, or platform makes
-this line wrong? Hunt for:
+Read every assigned hunk. Use targeted reads of the enclosing function or caller to
+resolve a specific question about inputs, guards or consequences. For a finding on an
+unchanged line, identify the changed path that exposes it or the requirement still unmet.
+For each hunk, consider which inputs, states, timings or platforms could trigger:
 
 - inverted or wrong conditions, off-by-one, wrong operators
 - null/undefined/empty-collection deref where nearby lines show the value can be absent

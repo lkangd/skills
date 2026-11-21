@@ -32,13 +32,6 @@ Requirements in the target or spec describe intended behavior. Flag only consequ
 the requirements do not cover. Inspect surrounding code where needed to establish evidence.
 """
 
-VERIFY = """Investigate each candidate independently against the actual code and requirements.
-Return CONFIRMED for a named trigger and observable consequence, PLAUSIBLE for a realistic
-mechanism with an uncertain trigger, or REFUTED when the code, a guard, or a requirement
-disproves the claim. Give one verdict per index and cite the decisive evidence.
-Return a JSON array with objects containing index, verdict, and evidence.
-"""
-
 CANCEL = threading.Event()
 
 
@@ -232,6 +225,7 @@ def verify_wave(run, data, workers, concurrency):
     output = run / "out"
     findings(run, "prepare", "--strict")
     jobs = []
+    criteria = (ROOT / "references/verification.md").read_text()
     for batch in sorted(output.glob("verify-input-*.json")):
         batch_id = batch.stem.removeprefix("verify-input-")
         path = output / f"verdicts-{batch_id}.json"
@@ -249,7 +243,7 @@ def verify_wave(run, data, workers, concurrency):
             if patch.stat().st_size <= budget:
                 parts.append(patch.read_text())
                 budget -= patch.stat().st_size
-        prompt = (f"{READ_ONLY}\n{VERIFY}\nTask ID: verify-{batch_id}\n"
+        prompt = (f"{READ_ONLY}\n{criteria}\nReturn a JSON array.\nTask ID: verify-{batch_id}\n"
                   f"{data['header']}\n\n## Candidate batch\n{batch.read_text()}\n"
                   "Inspect cited files when more context is needed.\n## Related diff\n"
                   + "\n".join(parts))

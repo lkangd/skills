@@ -13,12 +13,11 @@ The packet's **Spec** section carries the requirements this change is supposed t
 (an issue, PRD, plan, or design doc — possibly several documents, each under its own
 `### Spec document:` heading). Check the diff against the spec in both directions:
 
-- **Missing or partial requirements**: something the spec asks for that the diff does not
-  implement, or implements only in part — a listed case skipped, a limit or default not
-  applied, an error path or message the spec names, a config/flag the spec requires.
-- **Scope creep**: behavior the diff adds that no spec line asks for and that is not obvious
-  plumbing for a stated requirement — extra features, abstraction or hooks for needs the spec
-  does not have, side changes to unrelated behavior.
+- **Missing or partial requirements**: trace a required case through its entry point and
+  existing guards or defaults. Cite the input for which the implementation falls short.
+- **Scope creep**: identify the boundary the spec sets and the added behavior that crosses
+  it, or show how the addition interferes with a stated requirement. An unmentioned
+  implementation detail alone does not establish a violation.
 - **Wrong implementation**: a requirement that looks addressed but whose behavior contradicts
   what the spec states — an inverted or off-by-one condition against a spec threshold, a
   different default, different user-visible copy, a different ordering or precedence.
